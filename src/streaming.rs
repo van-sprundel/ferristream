@@ -338,6 +338,72 @@ impl StreamingSession {
         self.http_addr
     }
 
+    /// Get download stats for a torrent
+    pub async fn get_stats(&self, torrent_id: usize) -> Option<TorrentStats> {
+        let url = format!("http://{}/torrents/{}/stats/v1", self.http_addr, torrent_id);
+
+        let resp = self.http_client.get(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        let json: serde_json::Value = resp.json().await.ok()?;
+
+        // Log the raw response once to understand the structure
+        debug!(stats_json = %json, "raw stats response");
+
+        // Parse the stats from librqbit response
+        // The structure varies - try different paths
+        let live = json.get("live");
+
+        let downloaded_bytes = live
+            .and_then(|l| l.get("downloaded_bytes"))
+            .and_then(|v| v.as_u64())
+            .or_else(|| json.get("progress_bytes").and_then(|v| v.as_u64()))
+            .unwrap_or(0);
+
+        let total_bytes = json
+            .get("total_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        let download_speed = live
+            .and_then(|l| l.get("download_speed"))
+            .and_then(|ds| {
+                // Could be {"mbps": 1.5} or {"human_readable": "1.5 MB/s"} or just a number
+                ds.get("mbps")
+                    .and_then(|v| v.as_f64())
+                    .map(|mbps| (mbps * 1_000_000.0 / 8.0) as u64)
+                    .or_else(|| ds.as_f64().map(|v| v as u64))
+            })
+            .unwrap_or(0);
+
+        let upload_speed = live
+            .and_then(|l| l.get("upload_speed"))
+            .and_then(|us| {
+                us.get("mbps")
+                    .and_then(|v| v.as_f64())
+                    .map(|mbps| (mbps * 1_000_000.0 / 8.0) as u64)
+                    .or_else(|| us.as_f64().map(|v| v as u64))
+            })
+            .unwrap_or(0);
+
+        let peers_connected = live
+            .and_then(|l| l.get("snapshot"))
+            .and_then(|s| s.get("peers"))
+            .and_then(|v| v.as_u64())
+            .or_else(|| json.get("peers").and_then(|v| v.as_u64()))
+            .unwrap_or(0) as u32;
+
+        Some(TorrentStats {
+            downloaded_bytes,
+            total_bytes,
+            download_speed,
+            upload_speed,
+            peers_connected,
+        })
+    }
+
     /// Fetch a .torrent file, manually following redirects
     async fn fetch_torrent_file(&self, url: &str) -> Result<Vec<u8>, StreamError> {
         let mut current_url = url.to_string();
@@ -438,6 +504,15 @@ pub struct TorrentInfo {
     pub stream_url: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TorrentStats {
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub download_speed: u64,
+    pub upload_speed: u64,
+    pub peers_connected: u32,
+}
+
 pub async fn launch_player(
     command: &str,
     args: &[String],
@@ -452,15 +527,17 @@ pub async fn launch_player(
             "--cache=yes",
             "--demuxer-max-bytes=150M",
             "--hwdec=auto",
+            "--really-quiet",  // Suppress all terminal output
         ]);
     }
 
     cmd.args(args);
     cmd.arg(stream_url);
 
+    // Suppress all output to not corrupt TUI
     cmd.stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     cmd.spawn()
         .map_err(|e| StreamError::PlayerError(command.to_string(), e.to_string()))
