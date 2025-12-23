@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use librqbit::api::Api;
 use librqbit::http_api::{HttpApi, HttpApiOptions};
@@ -10,6 +11,7 @@ use reqwest::Client;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::process::Command;
+use tokio::time::timeout;
 
 #[derive(Error, Debug)]
 pub enum StreamError {
@@ -39,9 +41,23 @@ impl StreamingSession {
             .await
             .map_err(|e| StreamError::SessionError(e.to_string()))?;
 
-        let session = Session::new_with_opts(temp_dir, SessionOptions::default())
+        eprintln!("  → Creating librqbit session...");
+        let session_future = Session::new_with_opts(
+            temp_dir,
+            SessionOptions {
+                // Re-enable DHT - needed for magnet resolution
+                disable_dht: false,
+                disable_dht_persistence: true, // Don't persist DHT state
+                ..Default::default()
+            },
+        );
+
+        let session = timeout(Duration::from_secs(30), session_future)
             .await
+            .map_err(|_| StreamError::SessionError("timeout creating session (30s)".to_string()))?
             .map_err(|e| StreamError::SessionError(e.to_string()))?;
+
+        eprintln!("  → Session created");
 
         let api = Api::new(session.clone(), None, None);
 
@@ -86,20 +102,26 @@ impl StreamingSession {
         Box::pin(async move {
             // there are two types of urls (magnet/http).
             // if it's an http URL fetch the .torrent file first
-            if url.starts_with("http://") || url.starts_with("https://") {
+            let magnet_url = if url.starts_with("http://") || url.starts_with("https://") {
+                eprintln!("  → Fetching torrent from URL...");
                 match self.fetch_torrent_file(&url).await {
                     Ok(bytes) => {
+                        eprintln!("  → Got .torrent file ({} bytes)", bytes.len());
                         return self.add_torrent_bytes(bytes).await;
                     }
                     Err(StreamError::MagnetRedirect(magnet)) => {
-                        // prowlarr redirected to a magnet url
-                        return self.add_torrent(&magnet).await;
+                        eprintln!("  → Prowlarr redirected to magnet link");
+                        magnet
                     }
                     Err(e) => return Err(e),
                 }
-            }
+            } else {
+                url
+            };
 
-            self.add_torrent_inner(AddTorrent::from_url(&url)).await
+            // Use HTTP API to add torrent - more reliable than direct Rust API
+            eprintln!("  → Using magnet link: {}...", &magnet_url[..magnet_url.len().min(80)]);
+            self.add_torrent_via_http_full(&magnet_url).await
         })
     }
 
@@ -107,35 +129,156 @@ impl StreamingSession {
         self.add_torrent_inner(AddTorrent::from_bytes(bytes)).await
     }
 
+    async fn add_torrent_via_http_full(&self, magnet_or_url: &str) -> Result<TorrentInfo, StreamError> {
+        eprintln!("  → Adding torrent via HTTP API...");
+
+        let url = format!("http://{}/torrents", self.http_addr);
+        let response = timeout(
+            Duration::from_secs(30),
+            self.http_client.post(&url).body(magnet_or_url.to_string()).send(),
+        )
+        .await
+        .map_err(|_| StreamError::TorrentError("timeout posting to HTTP API".to_string()))?
+        .map_err(|e| StreamError::TorrentError(format!("HTTP request failed: {}", e)))?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(StreamError::TorrentError(format!(
+                "HTTP {} - {}",
+                status, body
+            )));
+        }
+
+        eprintln!("  → HTTP API response: {}", &body[..body.len().min(200)]);
+
+        // Parse response to get torrent ID
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| StreamError::TorrentError(format!("invalid JSON: {}", e)))?;
+
+        let id = json
+            .get("id")
+            .and_then(|v| v.as_u64())
+            .map(|id| id as usize)
+            .ok_or_else(|| StreamError::TorrentError("no id in response".to_string()))?;
+
+        eprintln!("  → Torrent added (id: {}), waiting for metadata...", id);
+
+        // Poll for torrent details until we have metadata
+        let details_url = format!("http://{}/torrents/{}", self.http_addr, id);
+        let start = std::time::Instant::now();
+        let timeout_duration = Duration::from_secs(120);
+
+        loop {
+            if start.elapsed() > timeout_duration {
+                return Err(StreamError::TorrentError(
+                    "timeout waiting for metadata (120s)".to_string(),
+                ));
+            }
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            let resp = self
+                .http_client
+                .get(&details_url)
+                .send()
+                .await
+                .map_err(|e| StreamError::TorrentError(e.to_string()))?;
+
+            if !resp.status().is_success() {
+                continue;
+            }
+
+            let details: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| StreamError::TorrentError(e.to_string()))?;
+
+            // Check if we have file info
+            if let Some(files) = details.get("files").and_then(|f| f.as_array()) {
+                if !files.is_empty() {
+                    eprintln!("  → Metadata received! {} files", files.len());
+
+                    // Find video file
+                    let video_file = files.iter().enumerate().find(|(_, f)| {
+                        let name = f.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        VIDEO_EXTENSIONS.iter().any(|ext| name.to_lowercase().ends_with(ext))
+                    });
+
+                    let (file_idx, file_info) = video_file.ok_or(StreamError::NoVideoFiles)?;
+                    let file_name = file_info
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let torrent_name = details
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let stream_url = format!(
+                        "http://{}/torrents/{}/stream/{}",
+                        self.http_addr, id, file_idx
+                    );
+
+                    return Ok(TorrentInfo {
+                        id,
+                        name: torrent_name,
+                        file_name,
+                        file_idx,
+                        stream_url,
+                    });
+                }
+            }
+
+            eprintln!("  → Still waiting for metadata... ({}s)", start.elapsed().as_secs());
+        }
+    }
+
     async fn add_torrent_inner(
         &self,
         add_torrent: AddTorrent<'_>,
     ) -> Result<TorrentInfo, StreamError> {
-        let response = self
-            .session
-            .add_torrent(
-                add_torrent,
-                Some(AddTorrentOptions {
-                    overwrite: true,
-                    ..Default::default()
-                }),
-            )
+        eprintln!("  → Adding torrent to session...");
+
+        let add_future = self.session.add_torrent(
+            add_torrent,
+            Some(AddTorrentOptions {
+                overwrite: true,
+                ..Default::default()
+            }),
+        );
+
+        let response = timeout(Duration::from_secs(60), add_future)
             .await
+            .map_err(|_| StreamError::TorrentError("timeout adding torrent (60s)".to_string()))?
             .map_err(|e| StreamError::TorrentError(e.to_string()))?;
 
         let (id, handle) = match response {
-            AddTorrentResponse::Added(id, handle) => (id, handle),
-            AddTorrentResponse::AlreadyManaged(id, handle) => (id, handle),
+            AddTorrentResponse::Added(id, handle) => {
+                eprintln!("  → Torrent added (id: {})", id);
+                (id, handle)
+            }
+            AddTorrentResponse::AlreadyManaged(id, handle) => {
+                eprintln!("  → Torrent already managed (id: {})", id);
+                (id, handle)
+            }
             AddTorrentResponse::ListOnly(_) => {
                 return Err(StreamError::TorrentError("list only response".to_string()))
             }
         };
 
-        // wait for metadata
-        handle
-            .wait_until_initialized()
+        // wait for metadata (this can take a while for magnet links)
+        eprintln!("  → Waiting for metadata from peers...");
+        timeout(Duration::from_secs(120), handle.wait_until_initialized())
             .await
+            .map_err(|_| StreamError::TorrentError("timeout waiting for metadata (120s) - torrent may have no active peers".to_string()))?
             .map_err(|e| StreamError::TorrentError(e.to_string()))?;
+
+        eprintln!("  → Metadata received!");
 
         let torrent_name = handle.name().unwrap_or_default();
 

@@ -145,6 +145,7 @@ command = "mpv"
 
     println!("HTTP server at: http://{}", session.http_addr());
     println!("Fetching torrent metadata (this may take a moment)...");
+    println!("Torrent URL: {}", &torrent_url[..torrent_url.len().min(100)]);
 
     // add torrent and get stream info
     let torrent_info = match session.add_torrent(&torrent_url).await {
