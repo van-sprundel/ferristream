@@ -12,19 +12,30 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::time::timeout;
+use tracing::{debug, info};
 
 #[derive(Error, Debug)]
 pub enum StreamError {
-    #[error("session error: {0}")]
+    #[error("failed to create streaming session: {0}")]
     SessionError(String),
-    #[error("torrent error: {0}")]
+
+    #[error("{0}")]
     TorrentError(String),
-    #[error("no video files found in torrent")]
+
+    #[error("no video files found in torrent - this might be a game, software, or audio release")]
     NoVideoFiles,
-    #[error("player error: {0}")]
-    PlayerError(String),
+
+    #[error("failed to launch player '{0}': {1}. Is the player installed and in your PATH?")]
+    PlayerError(String, String),
+
     #[error("magnet redirect: {0}")]
     MagnetRedirect(String),
+
+    #[error("torrent has no active peers - try a different release with more seeders")]
+    NoPeers,
+
+    #[error("timeout waiting for torrent metadata - the torrent may be dead or have no seeders")]
+    MetadataTimeout,
 }
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v"];
@@ -33,6 +44,7 @@ pub struct StreamingSession {
     session: Arc<Session>,
     http_addr: SocketAddr,
     http_client: Client,
+    temp_dir: PathBuf,
 }
 
 impl StreamingSession {
@@ -41,9 +53,9 @@ impl StreamingSession {
             .await
             .map_err(|e| StreamError::SessionError(e.to_string()))?;
 
-        eprintln!("  → Creating librqbit session...");
+        debug!("creating librqbit session");
         let session_future = Session::new_with_opts(
-            temp_dir,
+            temp_dir.clone(),
             SessionOptions {
                 // Re-enable DHT - needed for magnet resolution
                 disable_dht: false,
@@ -57,7 +69,7 @@ impl StreamingSession {
             .map_err(|_| StreamError::SessionError("timeout creating session (30s)".to_string()))?
             .map_err(|e| StreamError::SessionError(e.to_string()))?;
 
-        eprintln!("  → Session created");
+        debug!("session created");
 
         let api = Api::new(session.clone(), None, None);
 
@@ -88,7 +100,16 @@ impl StreamingSession {
                 .redirect(reqwest::redirect::Policy::none()) // we handle these redirects manually
                 .build()
                 .unwrap(),
+            temp_dir,
         })
+    }
+
+    /// Clean up temp files
+    pub async fn cleanup(&self) {
+        info!("cleaning up temp files");
+        if let Err(e) = tokio::fs::remove_dir_all(&self.temp_dir).await {
+            debug!(error = %e, "failed to remove temp dir (may not exist)");
+        }
     }
 
     /// Add a torrent by URL (magnet or .torrent file URL)
@@ -103,14 +124,14 @@ impl StreamingSession {
             // there are two types of urls (magnet/http).
             // if it's an http URL fetch the .torrent file first
             let magnet_url = if url.starts_with("http://") || url.starts_with("https://") {
-                eprintln!("  → Fetching torrent from URL...");
+                debug!("fetching torrent from URL");
                 match self.fetch_torrent_file(&url).await {
                     Ok(bytes) => {
-                        eprintln!("  → Got .torrent file ({} bytes)", bytes.len());
+                        debug!(bytes = bytes.len(), "got .torrent file");
                         return self.add_torrent_bytes(bytes).await;
                     }
                     Err(StreamError::MagnetRedirect(magnet)) => {
-                        eprintln!("  → Prowlarr redirected to magnet link");
+                        debug!("prowlarr redirected to magnet link");
                         magnet
                     }
                     Err(e) => return Err(e),
@@ -119,8 +140,7 @@ impl StreamingSession {
                 url
             };
 
-            // Use HTTP API to add torrent - more reliable than direct Rust API
-            eprintln!("  → Using magnet link: {}...", &magnet_url[..magnet_url.len().min(80)]);
+            debug!(magnet = %&magnet_url[..magnet_url.len().min(60)], "using magnet link");
             self.add_torrent_via_http_full(&magnet_url).await
         })
     }
@@ -130,12 +150,17 @@ impl StreamingSession {
     }
 
     async fn add_torrent_via_http_full(&self, magnet_or_url: &str) -> Result<TorrentInfo, StreamError> {
-        eprintln!("  → Adding torrent via HTTP API...");
+        debug!("adding torrent via HTTP API");
 
         let url = format!("http://{}/torrents", self.http_addr);
+        // Add overwrite=true to allow resuming/replacing existing torrents
         let response = timeout(
             Duration::from_secs(30),
-            self.http_client.post(&url).body(magnet_or_url.to_string()).send(),
+            self.http_client
+                .post(&url)
+                .query(&[("overwrite", "true")])
+                .body(magnet_or_url.to_string())
+                .send(),
         )
         .await
         .map_err(|_| StreamError::TorrentError("timeout posting to HTTP API".to_string()))?
@@ -151,7 +176,7 @@ impl StreamingSession {
             )));
         }
 
-        eprintln!("  → HTTP API response: {}", &body[..body.len().min(200)]);
+        debug!(response = %&body[..body.len().min(100)], "HTTP API response");
 
         // Parse response to get torrent ID
         let json: serde_json::Value = serde_json::from_str(&body)
@@ -163,7 +188,7 @@ impl StreamingSession {
             .map(|id| id as usize)
             .ok_or_else(|| StreamError::TorrentError("no id in response".to_string()))?;
 
-        eprintln!("  → Torrent added (id: {}), waiting for metadata...", id);
+        info!(id, "torrent added, waiting for metadata");
 
         // Poll for torrent details until we have metadata
         let details_url = format!("http://{}/torrents/{}", self.http_addr, id);
@@ -172,9 +197,7 @@ impl StreamingSession {
 
         loop {
             if start.elapsed() > timeout_duration {
-                return Err(StreamError::TorrentError(
-                    "timeout waiting for metadata (120s)".to_string(),
-                ));
+                return Err(StreamError::MetadataTimeout);
             }
 
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -198,7 +221,7 @@ impl StreamingSession {
             // Check if we have file info
             if let Some(files) = details.get("files").and_then(|f| f.as_array()) {
                 if !files.is_empty() {
-                    eprintln!("  → Metadata received! {} files", files.len());
+                    info!(files = files.len(), "metadata received");
 
                     // Find video file
                     let video_file = files.iter().enumerate().find(|(_, f)| {
@@ -234,7 +257,7 @@ impl StreamingSession {
                 }
             }
 
-            eprintln!("  → Still waiting for metadata... ({}s)", start.elapsed().as_secs());
+            debug!(elapsed_secs = start.elapsed().as_secs(), "still waiting for metadata");
         }
     }
 
@@ -242,7 +265,7 @@ impl StreamingSession {
         &self,
         add_torrent: AddTorrent<'_>,
     ) -> Result<TorrentInfo, StreamError> {
-        eprintln!("  → Adding torrent to session...");
+        debug!("adding torrent to session");
 
         let add_future = self.session.add_torrent(
             add_torrent,
@@ -259,11 +282,11 @@ impl StreamingSession {
 
         let (id, handle) = match response {
             AddTorrentResponse::Added(id, handle) => {
-                eprintln!("  → Torrent added (id: {})", id);
+                debug!(id, "torrent added");
                 (id, handle)
             }
             AddTorrentResponse::AlreadyManaged(id, handle) => {
-                eprintln!("  → Torrent already managed (id: {})", id);
+                debug!(id, "torrent already managed");
                 (id, handle)
             }
             AddTorrentResponse::ListOnly(_) => {
@@ -272,13 +295,13 @@ impl StreamingSession {
         };
 
         // wait for metadata (this can take a while for magnet links)
-        eprintln!("  → Waiting for metadata from peers...");
+        debug!("waiting for metadata from peers");
         timeout(Duration::from_secs(120), handle.wait_until_initialized())
             .await
-            .map_err(|_| StreamError::TorrentError("timeout waiting for metadata (120s) - torrent may have no active peers".to_string()))?
+            .map_err(|_| StreamError::MetadataTimeout)?
             .map_err(|e| StreamError::TorrentError(e.to_string()))?;
 
-        eprintln!("  → Metadata received!");
+        info!("metadata received");
 
         let torrent_name = handle.name().unwrap_or_default();
 
@@ -422,14 +445,17 @@ pub async fn launch_player(
 ) -> Result<tokio::process::Child, StreamError> {
     let mut cmd = Command::new(command);
 
-    cmd.args([
-        "--force-seekable=yes",
-        "--cache=yes",
-        "--demuxer-max-bytes=150M",
-        "--hwdec=auto",
-    ]);
-    cmd.args(args);
+    // Only add mpv-specific args if using mpv
+    if command.contains("mpv") {
+        cmd.args([
+            "--force-seekable=yes",
+            "--cache=yes",
+            "--demuxer-max-bytes=150M",
+            "--hwdec=auto",
+        ]);
+    }
 
+    cmd.args(args);
     cmd.arg(stream_url);
 
     cmd.stdin(Stdio::null())
@@ -437,5 +463,5 @@ pub async fn launch_player(
         .stderr(Stdio::inherit());
 
     cmd.spawn()
-        .map_err(|e| StreamError::PlayerError(e.to_string()))
+        .map_err(|e| StreamError::PlayerError(command.to_string(), e.to_string()))
 }

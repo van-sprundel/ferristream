@@ -87,6 +87,8 @@ impl TorznabClient {
         }
     }
 
+    /// Search with optional category filter
+    /// Categories: 2000 = Movies, 5000 = TV
     pub async fn search(
         &self,
         base_url: &str,
@@ -94,13 +96,27 @@ impl TorznabClient {
         indexer_id: i32,
         indexer_name: &str,
         query: &str,
+        categories: Option<&[u32]>,
     ) -> Result<Vec<TorrentResult>, TorznabError> {
+        let cat_param = categories
+            .map(|cats| {
+                format!(
+                    "&cat={}",
+                    cats.iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
+            .unwrap_or_default();
+
         let url = format!(
-            "{}/{}/api?t=search&apikey={}&q={}&limit=100",
+            "{}/{}/api?t=search&apikey={}&q={}&limit=100{}",
             base_url.trim_end_matches('/'),
             indexer_id,
             api_key,
-            urlencoding::encode(query)
+            urlencoding::encode(query),
+            cat_param
         );
 
         let response = self.client.get(&url).send().await?;
