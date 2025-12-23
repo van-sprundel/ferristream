@@ -11,9 +11,20 @@ use config::Config;
 use prowlarr::ProwlarrClient;
 use streaming::StreamingSession;
 use torznab::{TorrentResult, TorznabClient};
+use tracing::warn;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
+    // Initialize tracing - use RUST_LOG env var for filtering
+    // Default: only show warn and above, unless RUST_LOG is set
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("warn,librqbit=warn")),
+        )
+        .with_target(false)
+        .init();
     let config = match Config::load() {
         Ok(config) => config,
         Err(e) => {
@@ -65,6 +76,9 @@ command = "mpv"
 
     let torznab = TorznabClient::new();
 
+    // Filter to Movies (2000) and TV (5000) categories only
+    const VIDEO_CATEGORIES: &[u32] = &[2000, 5000];
+
     let mut all_results: Vec<TorrentResult> = Vec::new();
 
     for indexer in &indexers {
@@ -75,6 +89,7 @@ command = "mpv"
                 indexer.id,
                 &indexer.name,
                 &query,
+                Some(VIDEO_CATEGORIES),
             )
             .await
         {
@@ -82,7 +97,7 @@ command = "mpv"
                 all_results.extend(results);
             }
             Err(e) => {
-                eprintln!("[{}] Search failed: {}", indexer.name, e);
+                warn!(indexer = %indexer.name, error = %e, "search failed");
             }
         }
     }
@@ -143,9 +158,7 @@ command = "mpv"
         }
     };
 
-    println!("HTTP server at: http://{}", session.http_addr());
-    println!("Fetching torrent metadata (this may take a moment)...");
-    println!("Torrent URL: {}", &torrent_url[..torrent_url.len().min(100)]);
+    println!("Fetching torrent metadata...");
 
     // add torrent and get stream info
     let torrent_info = match session.add_torrent(&torrent_url).await {
@@ -178,5 +191,9 @@ command = "mpv"
 
     // wait for player to exit
     let _ = child.wait().await;
+
+    // cleanup temp files
+    session.cleanup().await;
+
     println!("Playback finished");
 }
