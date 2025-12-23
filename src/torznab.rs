@@ -40,6 +40,40 @@ impl TorrentResult {
             None => "?".to_string(),
         }
     }
+
+    /// Get a URL that librqbit can use
+    /// magnet, infohash-based magnet, or .torrent URL
+    pub fn get_torrent_url(&self) -> Option<String> {
+        // prefer magnet url if available
+        if let Some(ref magnet) = self.magnet_url {
+            return Some(magnet.clone());
+        }
+
+        // check if link is a magnet url
+        if let Some(ref link) = self.link {
+            if link.starts_with("magnet:") {
+                return Some(link.clone());
+            }
+        }
+
+        // construct magnet from infohash if available
+        if let Some(ref hash) = self.infohash {
+            let encoded_name = urlencoding::encode(&self.title);
+            return Some(format!("magnet:?xt=urn:btih:{}&dn={}", hash, encoded_name));
+        }
+
+        // fall back to .torrent download link (prowlarr proxy URL)
+        if let Some(ref link) = self.link {
+            return Some(link.clone());
+        }
+
+        None
+    }
+
+    /// Check if this result can be streamed
+    pub fn is_streamable(&self) -> bool {
+        self.magnet_url.is_some() || self.infohash.is_some() || self.link.is_some()
+    }
 }
 
 pub struct TorznabClient {
@@ -116,7 +150,7 @@ impl TorznabClient {
                 Ok(Event::Empty(ref e)) => {
                     let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
 
-                    // Handle <torznab:attr name="X" value="Y" /> elements
+                    // handle <torznab:attr name="X" value="Y" /> elements
                     if name == "torznab:attr" || name == "attr" {
                         if let Some(ref mut item) = current_item {
                             let mut attr_name = String::new();
