@@ -581,6 +581,7 @@ version = "0.1.0"
 dependencies = [
  "directories 5.0.1",
  "librqbit",
+ "quick-xml",
  "ratatui",
  "reqwest",
  "serde",

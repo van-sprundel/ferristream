@@ -13,3 +13,4 @@ directories = "5.0"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 urlencoding = "2.1"
+quick-xml = "0.37"
