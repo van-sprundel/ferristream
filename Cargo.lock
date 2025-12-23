@@ -637,6 +637,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "serde",
+ "serde_json",
  "sha1_smol",
  "thiserror 2.0.17",
  "tokio",
