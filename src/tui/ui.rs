@@ -20,14 +20,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_search(frame: &mut Frame, app: &App) {
+    let has_suggestions = !app.suggestions.is_empty();
+    let suggestion_height = if has_suggestions { app.suggestions.len() as u16 + 2 } else { 0 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(3), // Title
-            Constraint::Length(3), // Input
-            Constraint::Length(3), // Status/help
-            Constraint::Min(0),    // Empty space
+            Constraint::Length(3),                // Title
+            Constraint::Length(3),                // Input
+            Constraint::Length(suggestion_height), // Suggestions dropdown
+            Constraint::Length(3),                // Status/help
+            Constraint::Min(0),                   // Empty space
         ])
         .split(frame.area());
 
@@ -65,15 +69,49 @@ fn draw_search(frame: &mut Frame, app: &App) {
         ));
     }
 
+    // Suggestions dropdown
+    if has_suggestions {
+        let items: Vec<ListItem> = app
+            .suggestions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let year_str = s.year.map(|y| format!(" ({})", y)).unwrap_or_default();
+                let media_icon = match s.media_type.as_str() {
+                    "movie" => "🎬",
+                    "tv" => "📺",
+                    _ => "•",
+                };
+
+                let style = if i == app.selected_suggestion {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+
+                ListItem::new(format!("{} {}{}", media_icon, s.title, year_str)).style(style)
+            })
+            .collect();
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
+                .style(Style::default().fg(Color::DarkGray)),
+        );
+        frame.render_widget(list, chunks[2]);
+    }
+
     // Status/error text
     let status = if app.is_searching {
         Paragraph::new("Searching...").style(Style::default().fg(Color::Yellow))
     } else if let Some(ref err) = app.search_error {
         Paragraph::new(err.as_str()).style(Style::default().fg(Color::Red))
+    } else if has_suggestions {
+        Paragraph::new("↑/↓: select | Tab: accept | Enter: search").style(Style::default().fg(Color::DarkGray))
     } else {
         Paragraph::new("Enter: search | d: doctor | Esc/q: quit").style(Style::default().fg(Color::DarkGray))
     };
-    frame.render_widget(status, chunks[2]);
+    frame.render_widget(status, chunks[3]);
 }
 
 fn draw_results(frame: &mut Frame, app: &App) {
