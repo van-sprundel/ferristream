@@ -17,7 +17,7 @@ pub enum ConfigError {
     ValidationError(String),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub prowlarr: ProwlarrConfig,
     pub tmdb: Option<TmdbConfig>,
@@ -29,7 +29,7 @@ pub struct Config {
     pub extensions: ExtensionsConfig,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ExtensionsConfig {
     #[serde(default)]
     pub discord: DiscordConfig,
@@ -37,14 +37,14 @@ pub struct ExtensionsConfig {
     pub trakt: TraktConfig,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct DiscordConfig {
     #[serde(default)]
     pub enabled: bool,
     pub app_id: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct TraktConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -52,18 +52,18 @@ pub struct TraktConfig {
     pub access_token: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ProwlarrConfig {
     pub url: String,
     pub apikey: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TmdbConfig {
     pub apikey: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PlayerConfig {
     #[serde(default = "default_player_command")]
     pub command: String,
@@ -84,7 +84,7 @@ fn default_player_command() -> String {
     "mpv".to_string()
 }
 
-#[derive(Default, Debug, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct StorageConfig {
     pub temp_dir: Option<PathBuf>,
 }

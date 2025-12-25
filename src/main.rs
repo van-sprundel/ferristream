@@ -1,9 +1,11 @@
 #![allow(unused)]
 
 mod config;
+mod doctor;
 mod extensions;
 mod prowlarr;
 mod streaming;
+mod tmdb;
 mod torznab;
 mod tui;
 

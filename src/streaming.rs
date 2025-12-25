@@ -149,7 +149,10 @@ impl StreamingSession {
         self.add_torrent_inner(AddTorrent::from_bytes(bytes)).await
     }
 
-    async fn add_torrent_via_http_full(&self, magnet_or_url: &str) -> Result<TorrentInfo, StreamError> {
+    async fn add_torrent_via_http_full(
+        &self,
+        magnet_or_url: &str,
+    ) -> Result<TorrentInfo, StreamError> {
         debug!("adding torrent via HTTP API");
 
         let url = format!("http://{}/torrents", self.http_addr);
@@ -226,7 +229,9 @@ impl StreamingSession {
                     // Find video file
                     let video_file = files.iter().enumerate().find(|(_, f)| {
                         let name = f.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                        VIDEO_EXTENSIONS.iter().any(|ext| name.to_lowercase().ends_with(ext))
+                        VIDEO_EXTENSIONS
+                            .iter()
+                            .any(|ext| name.to_lowercase().ends_with(ext))
                     });
 
                     let (file_idx, file_info) = video_file.ok_or(StreamError::NoVideoFiles)?;
@@ -257,7 +262,10 @@ impl StreamingSession {
                 }
             }
 
-            debug!(elapsed_secs = start.elapsed().as_secs(), "still waiting for metadata");
+            debug!(
+                elapsed_secs = start.elapsed().as_secs(),
+                "still waiting for metadata"
+            );
         }
     }
 
@@ -527,7 +535,7 @@ pub async fn launch_player(
             "--cache=yes",
             "--demuxer-max-bytes=150M",
             "--hwdec=auto",
-            "--really-quiet",  // Suppress all terminal output
+            "--really-quiet", // Suppress all terminal output
         ]);
     }
 

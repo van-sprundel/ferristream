@@ -1,10 +1,24 @@
+use crate::tmdb::SearchResult as TmdbResult;
 use crate::torznab::TorrentResult;
+
+use crate::doctor::{CheckResult, CheckStatus};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum View {
     Search,
     Results,
     Streaming,
+    Doctor,
+}
+
+/// TMDB metadata for the current search
+#[derive(Debug, Clone, Default)]
+pub struct TmdbMetadata {
+    pub title: String,
+    pub year: Option<u16>,
+    pub overview: Option<String>,
+    pub rating: Option<f64>,
+    pub media_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,8 +34,8 @@ pub enum StreamingState {
 pub struct DownloadProgress {
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
-    pub download_speed: u64,   // bytes/sec
-    pub upload_speed: u64,     // bytes/sec
+    pub download_speed: u64, // bytes/sec
+    pub upload_speed: u64,   // bytes/sec
     pub peers_connected: u32,
     pub progress_percent: f64,
 }
@@ -38,13 +52,18 @@ pub struct App {
     // Results
     pub results: Vec<TorrentResult>,
     pub selected_index: usize,
+    pub tmdb_info: Option<TmdbMetadata>,
 
     // Streaming
     pub streaming_state: StreamingState,
     pub current_title: String,
     pub current_file: String,
     pub download_progress: DownloadProgress,
-    pub is_streaming: bool,  // Prevents spawning multiple stream tasks
+    pub is_streaming: bool, // Prevents spawning multiple stream tasks
+
+    // Doctor
+    pub doctor_results: Vec<CheckResult>,
+    pub is_checking: bool,
 }
 
 impl App {
@@ -57,11 +76,14 @@ impl App {
             search_error: None,
             results: Vec::new(),
             selected_index: 0,
+            tmdb_info: None,
             streaming_state: StreamingState::Connecting,
             current_title: String::new(),
             current_file: String::new(),
             download_progress: DownloadProgress::default(),
             is_streaming: false,
+            doctor_results: Vec::new(),
+            is_checking: false,
         }
     }
 
