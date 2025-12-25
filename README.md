@@ -27,6 +27,16 @@ command = "mpv"
 enabled = true
 language = "en"
 opensubtitles_api_key = "your-key"  # from opensubtitles.com
+
+# Optional - Discord rich presence
+[extensions.discord]
+enabled = true
+
+# Optional - Trakt scrobbling
+[extensions.trakt]
+enabled = true
+client_id = "your-trakt-client-id"
+access_token = "your-trakt-access-token"
 ```
 
 ## Usage

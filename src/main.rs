@@ -68,7 +68,9 @@ command = "mpv"
     let mut ext_manager = ExtensionManager::new();
 
     if config.extensions.discord.enabled {
-        ext_manager.register(Box::new(DiscordExtension::new()));
+        ext_manager.register(Box::new(DiscordExtension::new(
+            config.extensions.discord.app_id.clone(),
+        )));
     }
 
     if config.extensions.trakt.enabled {

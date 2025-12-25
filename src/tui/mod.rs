@@ -13,6 +13,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
@@ -98,6 +99,8 @@ async fn run_app(
 
     // Streaming session (created when needed)
     let mut streaming_session: Option<StreamingSession> = None;
+    // Cancellation token for streaming task
+    let mut streaming_cancel: Option<CancellationToken> = None;
 
     loop {
         // Draw UI
@@ -145,6 +148,10 @@ async fn run_app(
                         title: app.current_title.clone(),
                         file_name,
                         total_bytes: app.download_progress.total_bytes,
+                        tmdb_id: app.current_tmdb_id,
+                        year: app.current_year.map(|y| y as u32),
+                        media_type: app.current_media_type.clone(),
+                        poster_url: app.current_poster_url.clone(),
                     }));
                 }
                 UiMessage::StreamError(e) => {
@@ -162,6 +169,10 @@ async fn run_app(
                             title: app.current_title.clone(),
                             file_name: app.current_file.clone(),
                             total_bytes: app.download_progress.total_bytes,
+                            tmdb_id: app.current_tmdb_id,
+                            year: app.current_year.map(|y| y as u32),
+                            media_type: app.current_media_type.clone(),
+                            poster_url: app.current_poster_url.clone(),
                         },
                         watched_percent,
                     });
@@ -221,6 +232,7 @@ async fn run_app(
                                                 overview: first.overview.clone(),
                                                 rating: first.vote_average,
                                                 media_type: first.media_type.clone(),
+                                                poster_url: first.poster_url("w500"),
                                             };
                                             let _ = tmdb_tx.send(UiMessage::TmdbInfo(info)).await;
                                         }
@@ -369,6 +381,32 @@ async fn run_app(
                         KeyCode::Backspace if !app.is_searching => {
                             app.search_input.pop();
                             app.suggestions.clear();
+                            app.selected_suggestion = 0;
+
+                            // Fetch suggestions if input is still long enough
+                            if app.search_input.len() >= 3 {
+                                let tx = tx.clone();
+                                let query = app.search_input.clone();
+                                let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+                                app.is_fetching_suggestions = true;
+
+                                tokio::spawn(async move {
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
+                                        if let Ok(results) = client.search_multi(&query).await {
+                                            let suggestions: Vec<TmdbSuggestion> = results
+                                                .into_iter()
+                                                .take(5)
+                                                .map(|r| TmdbSuggestion {
+                                                    title: r.display_title().to_string(),
+                                                    year: r.year(),
+                                                    media_type: r.media_type.unwrap_or_default(),
+                                                })
+                                                .collect();
+                                            let _ = tx.send(UiMessage::Suggestions(suggestions)).await;
+                                        }
+                                    }
+                                });
+                            }
                         }
                         _ => {}
                     },
@@ -391,7 +429,14 @@ async fn run_app(
                             if let Some(result) = app.selected_result() {
                                 if let Some(url) = result.get_torrent_url() {
                                     info!(title = %result.title, "starting stream");
-                                    app.current_title = result.title.clone();
+                                    // Use TMDB title if available, otherwise torrent title
+                                    app.current_title = app.tmdb_info.as_ref()
+                                        .map(|t| t.title.clone())
+                                        .unwrap_or_else(|| result.title.clone());
+                                    app.current_tmdb_id = app.tmdb_info.as_ref().and_then(|t| t.id);
+                                    app.current_year = app.tmdb_info.as_ref().and_then(|t| t.year);
+                                    app.current_media_type = app.tmdb_info.as_ref().and_then(|t| t.media_type.clone());
+                                    app.current_poster_url = app.tmdb_info.as_ref().and_then(|t| t.poster_url.clone());
                                     app.view = View::Streaming;
                                     app.streaming_state = StreamingState::Connecting;
                                     app.download_progress = DownloadProgress::default();
@@ -404,10 +449,19 @@ async fn run_app(
                                     let subtitles_enabled = config.subtitles.enabled;
                                     let preferred_language = config.subtitles.language.clone();
                                     let opensubtitles_key = config.subtitles.opensubtitles_api_key.clone();
-                                    let tmdb_id = app.tmdb_info.as_ref().and_then(|t| t.id);
+                                    let tmdb_id = app.current_tmdb_id;
+
+                                    // Create cancellation token
+                                    let cancel_token = CancellationToken::new();
+                                    streaming_cancel = Some(cancel_token.clone());
 
                                     // Spawn streaming task
                                     tokio::spawn(async move {
+                                        if cancel_token.is_cancelled() {
+                                            info!("streaming cancelled before start");
+                                            let _ = tx.send(UiMessage::PlayerExited).await;
+                                            return;
+                                        }
                                         info!("creating streaming session");
                                         // Create session
                                         let session = match StreamingSession::new(temp_dir).await {
@@ -424,6 +478,12 @@ async fn run_app(
                                             }
                                         };
 
+                                        if cancel_token.is_cancelled() {
+                                            info!("streaming cancelled");
+                                            session.cleanup().await;
+                                            let _ = tx.send(UiMessage::PlayerExited).await;
+                                            return;
+                                        }
                                         info!("adding torrent");
                                         let torrent_info = match session.add_torrent(&url).await {
                                             Ok(info) => {
@@ -529,6 +589,13 @@ async fn run_app(
                                             info!(subtitle = %sub, "using subtitle");
                                         }
 
+                                        if cancel_token.is_cancelled() {
+                                            info!("streaming cancelled before player launch");
+                                            progress_handle.abort();
+                                            session.cleanup().await;
+                                            let _ = tx.send(UiMessage::PlayerExited).await;
+                                            return;
+                                        }
                                         // Launch player
                                         info!(player = %player_command, "launching player");
                                         match streaming::launch_player(
@@ -570,8 +637,18 @@ async fn run_app(
 
                     View::Streaming => match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            // TODO: Kill player process if running
+                            // Cancel streaming task if running
+                            if let Some(cancel) = streaming_cancel.take() {
+                                info!("user cancelled streaming");
+                                cancel.cancel();
+                            }
+                            // Clean up session if it exists
+                            if let Some(session) = streaming_session.take() {
+                                session.cleanup().await;
+                            }
                             app.view = View::Results;
+                            app.streaming_state = StreamingState::Connecting;
+                            app.is_streaming = false;
                         }
                         _ => {}
                     },
