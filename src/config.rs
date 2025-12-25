@@ -27,6 +27,8 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub extensions: ExtensionsConfig,
+    #[serde(default)]
+    pub subtitles: SubtitlesConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -61,6 +63,34 @@ pub struct ProwlarrConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TmdbConfig {
     pub apikey: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubtitlesConfig {
+    #[serde(default = "default_subtitles_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_subtitle_language")]
+    pub language: String,
+    /// OpenSubtitles API key for fetching subtitles when not included in torrent
+    pub opensubtitles_api_key: Option<String>,
+}
+
+impl Default for SubtitlesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_subtitles_enabled(),
+            language: default_subtitle_language(),
+            opensubtitles_api_key: None,
+        }
+    }
+}
+
+fn default_subtitles_enabled() -> bool {
+    true
+}
+
+fn default_subtitle_language() -> String {
+    "en".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

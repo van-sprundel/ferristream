@@ -39,6 +39,39 @@ pub enum StreamError {
 }
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v"];
+const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "sub", "vtt"];
+
+/// Try to extract language code from subtitle filename
+/// e.g. "Movie.Name.2024.eng.srt" -> Some("eng")
+/// e.g. "Movie.Name.2024.English.srt" -> Some("English")
+fn extract_subtitle_language(filename: &str) -> Option<String> {
+    let name_lower = filename.to_lowercase();
+
+    // Common language patterns in subtitle filenames
+    let languages = [
+        ("english", "en"), ("eng", "en"), (".en.", "en"),
+        ("spanish", "es"), ("esp", "es"), (".es.", "es"),
+        ("french", "fr"), ("fre", "fr"), (".fr.", "fr"),
+        ("german", "de"), ("ger", "de"), (".de.", "de"),
+        ("italian", "it"), ("ita", "it"), (".it.", "it"),
+        ("portuguese", "pt"), ("por", "pt"), (".pt.", "pt"),
+        ("russian", "ru"), ("rus", "ru"), (".ru.", "ru"),
+        ("japanese", "ja"), ("jpn", "ja"), (".ja.", "ja"),
+        ("korean", "ko"), ("kor", "ko"), (".ko.", "ko"),
+        ("chinese", "zh"), ("chi", "zh"), (".zh.", "zh"),
+        ("dutch", "nl"), ("dut", "nl"), (".nl.", "nl"),
+        ("swedish", "sv"), ("swe", "sv"), (".sv.", "sv"),
+        ("arabic", "ar"), ("ara", "ar"), (".ar.", "ar"),
+    ];
+
+    for (pattern, code) in languages {
+        if name_lower.contains(pattern) {
+            return Some(code.to_string());
+        }
+    }
+
+    None
+}
 
 pub struct StreamingSession {
     session: Arc<Session>,
@@ -252,12 +285,39 @@ impl StreamingSession {
                         self.http_addr, id, file_idx
                     );
 
+                    // Find subtitle files
+                    let subtitle_files: Vec<SubtitleFile> = files
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, f)| {
+                            let name = f.get("name").and_then(|n| n.as_str())?;
+                            let name_lower = name.to_lowercase();
+                            if SUBTITLE_EXTENSIONS.iter().any(|ext| name_lower.ends_with(ext)) {
+                                let language = extract_subtitle_language(name);
+                                Some(SubtitleFile {
+                                    name: name.to_string(),
+                                    file_idx: idx,
+                                    language,
+                                    stream_url: format!(
+                                        "http://{}/torrents/{}/stream/{}",
+                                        self.http_addr, id, idx
+                                    ),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    info!(subtitles = subtitle_files.len(), "found subtitle files");
+
                     return Ok(TorrentInfo {
                         id,
                         name: torrent_name,
                         file_name,
                         file_idx,
                         stream_url,
+                        subtitle_files,
                     });
                 }
             }
@@ -328,6 +388,37 @@ impl StreamingSession {
             .map_err(|e| StreamError::TorrentError(e.to_string()))?
             .ok_or(StreamError::NoVideoFiles)?;
 
+        // Find subtitle files
+        let http_addr = self.http_addr;
+        let subtitle_files: Vec<SubtitleFile> = handle
+            .with_metadata(|meta| {
+                meta.file_infos
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, f)| {
+                        let path = f.relative_filename.to_string_lossy();
+                        let path_lower = path.to_lowercase();
+                        if SUBTITLE_EXTENSIONS.iter().any(|ext| path_lower.ends_with(ext)) {
+                            let language = extract_subtitle_language(&path);
+                            Some(SubtitleFile {
+                                name: path.to_string(),
+                                file_idx: idx,
+                                language,
+                                stream_url: format!(
+                                    "http://{}/torrents/{}/stream/{}",
+                                    http_addr, id, idx
+                                ),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .map_err(|e| StreamError::TorrentError(e.to_string()))?;
+
+        info!(subtitles = subtitle_files.len(), "found subtitle files");
+
         let stream_url = format!(
             "http://{}/torrents/{}/stream/{}",
             self.http_addr, id, file_idx
@@ -339,6 +430,7 @@ impl StreamingSession {
             file_name,
             file_idx,
             stream_url,
+            subtitle_files,
         })
     }
 
@@ -510,6 +602,15 @@ pub struct TorrentInfo {
     pub file_name: String,
     pub file_idx: usize,
     pub stream_url: String,
+    pub subtitle_files: Vec<SubtitleFile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleFile {
+    pub name: String,
+    pub file_idx: usize,
+    pub language: Option<String>,
+    pub stream_url: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -525,6 +626,7 @@ pub async fn launch_player(
     command: &str,
     args: &[String],
     stream_url: &str,
+    subtitle_url: Option<&str>,
 ) -> Result<tokio::process::Child, StreamError> {
     let mut cmd = Command::new(command);
 
@@ -537,6 +639,18 @@ pub async fn launch_player(
             "--hwdec=auto",
             "--really-quiet", // Suppress all terminal output
         ]);
+
+        // Add subtitle file if provided
+        if let Some(sub_url) = subtitle_url {
+            cmd.arg(format!("--sub-file={}", sub_url));
+        }
+    }
+
+    // For VLC, subtitles are handled differently
+    if command.contains("vlc") {
+        if let Some(sub_url) = subtitle_url {
+            cmd.arg(format!("--sub-file={}", sub_url));
+        }
     }
 
     cmd.args(args);
