@@ -20,6 +20,7 @@ pub struct TmdbMetadata {
     pub overview: Option<String>,
     pub rating: Option<f64>,
     pub media_type: Option<String>,
+    pub poster_url: Option<String>,
 }
 
 /// TMDB suggestion for autocomplete
@@ -72,6 +73,10 @@ pub struct App {
     pub streaming_state: StreamingState,
     pub current_title: String,
     pub current_file: String,
+    pub current_tmdb_id: Option<u64>,
+    pub current_year: Option<u16>,
+    pub current_media_type: Option<String>,
+    pub current_poster_url: Option<String>,
     pub download_progress: DownloadProgress,
     pub is_streaming: bool, // Prevents spawning multiple stream tasks
 
@@ -97,6 +102,10 @@ impl App {
             streaming_state: StreamingState::Connecting,
             current_title: String::new(),
             current_file: String::new(),
+            current_tmdb_id: None,
+            current_year: None,
+            current_media_type: None,
+            current_poster_url: None,
             download_progress: DownloadProgress::default(),
             is_streaming: false,
             doctor_results: Vec::new(),

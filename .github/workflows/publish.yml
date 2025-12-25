@@ -64,6 +64,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          DISCORD_APP_ID: ${{ secrets.DISCORD_APP_ID }}
 
   publish-release:
     needs: build
