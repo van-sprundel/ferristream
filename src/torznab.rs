@@ -80,6 +80,12 @@ pub struct TorznabClient {
     client: Client,
 }
 
+impl Default for TorznabClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TorznabClient {
     pub fn new() -> Self {
         Self {
