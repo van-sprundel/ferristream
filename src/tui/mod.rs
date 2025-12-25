@@ -1,7 +1,7 @@
 mod app;
 mod ui;
 
-pub use app::{App, DownloadProgress, StreamingState, View};
+pub use app::{App, DownloadProgress, StreamingState, TmdbMetadata, View};
 
 use std::io;
 use std::time::Duration;
@@ -16,28 +16,31 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
+use crate::doctor::{self, CheckResult};
 use crate::extensions::{ExtensionManager, MediaInfo, PlaybackEvent};
 use crate::prowlarr::ProwlarrClient;
 use crate::streaming::{self, StreamingSession};
+use crate::tmdb::{parse_torrent_title, TmdbClient};
 use crate::torznab::{TorrentResult, TorznabClient};
 
 /// Messages sent from background tasks to the UI
 pub enum UiMessage {
     SearchComplete(Vec<TorrentResult>),
     SearchError(String),
-    StreamReady { file_name: String, stream_url: String },
+    TmdbInfo(TmdbMetadata),
+    StreamReady {
+        file_name: String,
+        stream_url: String,
+    },
     StreamError(String),
     ProgressUpdate(DownloadProgress),
     PlayerExited,
+    DoctorComplete(Vec<CheckResult>),
 }
 
 fn restore_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(
-        io::stdout(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    );
+    let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
 pub async fn run(config: Config, ext_manager: ExtensionManager) -> io::Result<()> {
@@ -116,7 +119,17 @@ async fn run_app(
                     app.is_searching = false;
                     app.search_error = Some(e);
                 }
-                UiMessage::StreamReady { file_name, stream_url } => {
+                UiMessage::TmdbInfo(info) => {
+                    app.tmdb_info = Some(info);
+                }
+                UiMessage::DoctorComplete(results) => {
+                    app.doctor_results = results;
+                    app.is_checking = false;
+                }
+                UiMessage::StreamReady {
+                    file_name,
+                    stream_url,
+                } => {
                     app.current_file = file_name.clone();
                     app.streaming_state = StreamingState::Ready { stream_url };
 
@@ -179,12 +192,35 @@ async fn run_app(
                             info!(query = %app.search_input, "starting search");
                             app.is_searching = true;
                             app.search_error = None;
+                            app.tmdb_info = None;
                             let query = app.search_input.clone();
                             let tx = tx.clone();
                             let prowlarr_url = config.prowlarr.url.clone();
                             let prowlarr_apikey = config.prowlarr.apikey.clone();
+                            let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
 
-                            // Spawn search task
+                            // Spawn TMDB lookup task in parallel
+                            let tmdb_tx = tx.clone();
+                            let tmdb_query = query.clone();
+                            tokio::spawn(async move {
+                                if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
+                                    debug!(query = %tmdb_query, "looking up TMDB info");
+                                    if let Ok(results) = client.search_multi(&tmdb_query).await {
+                                        if let Some(first) = results.first() {
+                                            let info = TmdbMetadata {
+                                                title: first.display_title().to_string(),
+                                                year: first.year(),
+                                                overview: first.overview.clone(),
+                                                rating: first.vote_average,
+                                                media_type: first.media_type.clone(),
+                                            };
+                                            let _ = tmdb_tx.send(UiMessage::TmdbInfo(info)).await;
+                                        }
+                                    }
+                                }
+                            });
+
+                            // Spawn torrent search task
                             tokio::spawn(async move {
                                 let prowlarr_config = crate::config::ProwlarrConfig {
                                     url: prowlarr_url,
@@ -215,19 +251,28 @@ async fn run_app(
                                                 .await
                                             {
                                                 Ok(results) => {
-                                                    info!(count = results.len(), "got results from indexer");
+                                                    info!(
+                                                        count = results.len(),
+                                                        "got results from indexer"
+                                                    );
                                                     all_results.extend(results);
                                                 }
                                                 Err(e) => {
                                                     error!(error = %e, indexer = %indexer.name, "search failed");
-                                                    last_error = Some(format!("{}: {}", indexer.name, e));
+                                                    last_error =
+                                                        Some(format!("{}: {}", indexer.name, e));
                                                 }
                                             }
                                         }
                                     }
                                     Err(e) => {
                                         error!(error = %e, "failed to get indexers");
-                                        let _ = tx.send(UiMessage::SearchError(format!("Prowlarr error: {}", e))).await;
+                                        let _ = tx
+                                            .send(UiMessage::SearchError(format!(
+                                                "Prowlarr error: {}",
+                                                e
+                                            )))
+                                            .await;
                                         return;
                                     }
                                 }
@@ -246,11 +291,24 @@ async fn run_app(
                                     if let Some(err) = last_error {
                                         let _ = tx.send(UiMessage::SearchError(err)).await;
                                     } else {
-                                        let _ = tx.send(UiMessage::SearchComplete(streamable)).await;
+                                        let _ =
+                                            tx.send(UiMessage::SearchComplete(streamable)).await;
                                     }
                                 } else {
                                     let _ = tx.send(UiMessage::SearchComplete(streamable)).await;
                                 }
+                            });
+                        }
+                        KeyCode::Char('d') if app.search_input.is_empty() && !app.is_searching => {
+                            // Open doctor view and run checks immediately
+                            app.view = View::Doctor;
+                            app.doctor_results.clear();
+                            app.is_checking = true;
+                            let tx = tx.clone();
+                            let config_clone = config.clone();
+                            tokio::spawn(async move {
+                                let results = doctor::run_checks(&config_clone).await;
+                                let _ = tx.send(UiMessage::DoctorComplete(results)).await;
                             });
                         }
                         KeyCode::Char(c) if !app.is_searching => {
@@ -302,7 +360,9 @@ async fn run_app(
                                             }
                                             Err(e) => {
                                                 error!(error = %e, "failed to create session");
-                                                let _ = tx.send(UiMessage::StreamError(e.to_string())).await;
+                                                let _ = tx
+                                                    .send(UiMessage::StreamError(e.to_string()))
+                                                    .await;
                                                 return;
                                             }
                                         };
@@ -315,7 +375,9 @@ async fn run_app(
                                             }
                                             Err(e) => {
                                                 error!(error = %e, "failed to add torrent");
-                                                let _ = tx.send(UiMessage::StreamError(e.to_string())).await;
+                                                let _ = tx
+                                                    .send(UiMessage::StreamError(e.to_string()))
+                                                    .await;
                                                 return;
                                             }
                                         };
@@ -334,8 +396,11 @@ async fn run_app(
                                         let torrent_id = torrent_info.id;
                                         let progress_handle = tokio::spawn(async move {
                                             loop {
-                                                tokio::time::sleep(Duration::from_millis(500)).await;
-                                                if let Some(stats) = progress_session.get_stats(torrent_id).await {
+                                                tokio::time::sleep(Duration::from_millis(500))
+                                                    .await;
+                                                if let Some(stats) =
+                                                    progress_session.get_stats(torrent_id).await
+                                                {
                                                     let progress = DownloadProgress {
                                                         downloaded_bytes: stats.downloaded_bytes,
                                                         total_bytes: stats.total_bytes,
@@ -343,12 +408,18 @@ async fn run_app(
                                                         upload_speed: stats.upload_speed,
                                                         peers_connected: stats.peers_connected,
                                                         progress_percent: if stats.total_bytes > 0 {
-                                                            (stats.downloaded_bytes as f64 / stats.total_bytes as f64) * 100.0
+                                                            (stats.downloaded_bytes as f64
+                                                                / stats.total_bytes as f64)
+                                                                * 100.0
                                                         } else {
                                                             0.0
                                                         },
                                                     };
-                                                    if progress_tx.send(UiMessage::ProgressUpdate(progress)).await.is_err() {
+                                                    if progress_tx
+                                                        .send(UiMessage::ProgressUpdate(progress))
+                                                        .await
+                                                        .is_err()
+                                                    {
                                                         break;
                                                     }
                                                 }
@@ -371,7 +442,9 @@ async fn run_app(
                                             }
                                             Err(e) => {
                                                 error!(error = %e, "failed to launch player");
-                                                let _ = tx.send(UiMessage::StreamError(e.to_string())).await;
+                                                let _ = tx
+                                                    .send(UiMessage::StreamError(e.to_string()))
+                                                    .await;
                                                 progress_handle.abort();
                                                 return;
                                             }
@@ -395,6 +468,23 @@ async fn run_app(
                         KeyCode::Char('q') | KeyCode::Esc => {
                             // TODO: Kill player process if running
                             app.view = View::Results;
+                        }
+                        _ => {}
+                    },
+
+                    View::Doctor => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            app.view = View::Search;
+                        }
+                        KeyCode::Char('r') if !app.is_checking => {
+                            // Run checks
+                            app.is_checking = true;
+                            let tx = tx.clone();
+                            let config_clone = config.clone();
+                            tokio::spawn(async move {
+                                let results = doctor::run_checks(&config_clone).await;
+                                let _ = tx.send(UiMessage::DoctorComplete(results)).await;
+                            });
                         }
                         _ => {}
                     },

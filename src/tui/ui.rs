@@ -6,6 +6,8 @@ use ratatui::{
     Frame,
 };
 
+use crate::doctor::CheckStatus;
+
 use super::app::{App, StreamingState, View};
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -13,6 +15,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Search => draw_search(frame, app),
         View::Results => draw_results(frame, app),
         View::Streaming => draw_streaming(frame, app),
+        View::Doctor => draw_doctor(frame, app),
     }
 }
 
@@ -30,7 +33,11 @@ fn draw_search(frame: &mut Frame, app: &App) {
 
     // Title
     let title = Paragraph::new("ferristream")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(Block::default());
     frame.render_widget(title, chunks[0]);
 
@@ -60,33 +67,56 @@ fn draw_search(frame: &mut Frame, app: &App) {
 
     // Status/error text
     let status = if app.is_searching {
-        Paragraph::new("Searching...")
-            .style(Style::default().fg(Color::Yellow))
+        Paragraph::new("Searching...").style(Style::default().fg(Color::Yellow))
     } else if let Some(ref err) = app.search_error {
-        Paragraph::new(err.as_str())
-            .style(Style::default().fg(Color::Red))
+        Paragraph::new(err.as_str()).style(Style::default().fg(Color::Red))
     } else {
-        Paragraph::new("Enter: search | Esc/q: quit")
-            .style(Style::default().fg(Color::DarkGray))
+        Paragraph::new("Enter: search | d: doctor | Esc/q: quit").style(Style::default().fg(Color::DarkGray))
     };
     frame.render_widget(status, chunks[2]);
 }
 
 fn draw_results(frame: &mut Frame, app: &App) {
+    // Adjust layout based on whether we have TMDB info
+    let has_tmdb = app.tmdb_info.is_some();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints([
-            Constraint::Length(1), // Title
-            Constraint::Min(0),    // Results list
-            Constraint::Length(2), // Help
-        ])
+        .constraints(if has_tmdb {
+            vec![
+                Constraint::Length(3), // TMDB info header
+                Constraint::Min(0),    // Results list
+                Constraint::Length(2), // Help
+            ]
+        } else {
+            vec![
+                Constraint::Length(1), // Title
+                Constraint::Min(0),    // Results list
+                Constraint::Length(2), // Help
+            ]
+        })
         .split(frame.area());
 
-    // Title
-    let title = Paragraph::new(format!("{} results", app.results.len()))
-        .style(Style::default().fg(Color::Cyan));
-    frame.render_widget(title, chunks[0]);
+    // Title / TMDB info
+    if let Some(ref tmdb) = app.tmdb_info {
+        let year_str = tmdb.year.map(|y| format!(" ({})", y)).unwrap_or_default();
+        let rating_str = tmdb.rating.map(|r| format!(" ★ {:.1}", r)).unwrap_or_default();
+        let media_str = tmdb.media_type.as_deref().unwrap_or("");
+
+        let header = format!(
+            "{}{} [{}]{}",
+            tmdb.title, year_str, media_str, rating_str
+        );
+
+        let title = Paragraph::new(header)
+            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .block(Block::default().borders(Borders::BOTTOM));
+        frame.render_widget(title, chunks[0]);
+    } else {
+        let title = Paragraph::new(format!("{} results", app.results.len()))
+            .style(Style::default().fg(Color::Cyan));
+        frame.render_widget(title, chunks[0]);
+    }
 
     // Results list
     let items: Vec<ListItem> = app
@@ -113,7 +143,10 @@ fn draw_results(frame: &mut Frame, app: &App) {
             };
 
             let line = Line::from(vec![
-                Span::styled(format!("S:{:<4}", seeders), Style::default().fg(seeder_color)),
+                Span::styled(
+                    format!("S:{:<4}", seeders),
+                    Style::default().fg(seeder_color),
+                ),
                 Span::raw(" | "),
                 Span::styled(r.size_human(), Style::default().fg(Color::DarkGray)),
                 Span::raw(" | "),
@@ -153,8 +186,16 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
 
     // Title
     let title = Paragraph::new(&*app.current_title)
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        .block(Block::default().borders(Borders::ALL).title("Now Streaming"));
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Now Streaming"),
+        );
     frame.render_widget(title, chunks[0]);
 
     // Status
@@ -181,7 +222,11 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
     );
 
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title("Download Progress"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Download Progress"),
+        )
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
         .percent((progress.progress_percent.min(100.0)) as u16)
         .label(progress_label);
@@ -208,9 +253,77 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
     }
 
     // Help
-    let help = Paragraph::new("q: stop & return to results")
-        .style(Style::default().fg(Color::DarkGray));
+    let help =
+        Paragraph::new("q: stop & return to results").style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[6]);
+}
+
+fn draw_doctor(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(0),    // Check results
+            Constraint::Length(2), // Help
+        ])
+        .split(frame.area());
+
+    // Title
+    let title = Paragraph::new("Service Health Check")
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default());
+    frame.render_widget(title, chunks[0]);
+
+    // Results
+    if app.is_checking {
+        let checking = Paragraph::new("Running checks...")
+            .style(Style::default().fg(Color::Yellow));
+        frame.render_widget(checking, chunks[1]);
+    } else if app.doctor_results.is_empty() {
+        let empty = Paragraph::new("Press 'r' to run checks")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty, chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app
+            .doctor_results
+            .iter()
+            .map(|r| {
+                let (icon, color) = match r.status {
+                    CheckStatus::Ok => ("✓", Color::Green),
+                    CheckStatus::Warning => ("⚠", Color::Yellow),
+                    CheckStatus::Error => ("✗", Color::Red),
+                };
+
+                let line = Line::from(vec![
+                    Span::styled(format!("{} ", icon), Style::default().fg(color)),
+                    Span::styled(
+                        format!("{:<10}", r.name),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(&r.message),
+                ]);
+
+                ListItem::new(line)
+            })
+            .collect();
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Results"),
+        );
+        frame.render_widget(list, chunks[1]);
+    }
+
+    // Help
+    let help = Paragraph::new("r: run checks | q/Esc: back to search")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[2]);
 }
 
 fn format_bytes(bytes: u64) -> String {
