@@ -25,6 +25,31 @@ pub struct Config {
     pub player: PlayerConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub extensions: ExtensionsConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ExtensionsConfig {
+    #[serde(default)]
+    pub discord: DiscordConfig,
+    #[serde(default)]
+    pub trakt: TraktConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DiscordConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub app_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct TraktConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub client_id: Option<String>,
+    pub access_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

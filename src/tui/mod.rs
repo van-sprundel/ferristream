@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
+use crate::extensions::{ExtensionManager, MediaInfo, PlaybackEvent};
 use crate::prowlarr::ProwlarrClient;
 use crate::streaming::{self, StreamingSession};
 use crate::torznab::{TorrentResult, TorznabClient};
@@ -39,7 +40,7 @@ fn restore_terminal() {
     );
 }
 
-pub async fn run(config: Config) -> io::Result<()> {
+pub async fn run(config: Config, ext_manager: ExtensionManager) -> io::Result<()> {
     // Set up panic hook to restore terminal
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -59,7 +60,10 @@ pub async fn run(config: Config) -> io::Result<()> {
     let (tx, mut rx) = mpsc::channel::<UiMessage>(32);
 
     // Main loop
-    let result = run_app(&mut terminal, &mut app, &config, tx, &mut rx).await;
+    let result = run_app(&mut terminal, &mut app, &config, &ext_manager, tx, &mut rx).await;
+
+    // Shutdown extensions
+    ext_manager.shutdown();
 
     // Restore terminal
     disable_raw_mode()?;
@@ -77,11 +81,12 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     config: &Config,
+    ext_manager: &ExtensionManager,
     tx: mpsc::Sender<UiMessage>,
     rx: &mut mpsc::Receiver<UiMessage>,
 ) -> io::Result<()> {
-    let prowlarr = ProwlarrClient::new(&config.prowlarr);
-    let torznab = TorznabClient::new();
+    let _prowlarr = ProwlarrClient::new(&config.prowlarr);
+    let _torznab = TorznabClient::new();
 
     // Video categories: Movies & TV
     const VIDEO_CATEGORIES: &[u32] = &[2000, 5000];
@@ -112,8 +117,15 @@ async fn run_app(
                     app.search_error = Some(e);
                 }
                 UiMessage::StreamReady { file_name, stream_url } => {
-                    app.current_file = file_name;
+                    app.current_file = file_name.clone();
                     app.streaming_state = StreamingState::Ready { stream_url };
+
+                    // Notify extensions
+                    ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
+                        title: app.current_title.clone(),
+                        file_name,
+                        total_bytes: app.download_progress.total_bytes,
+                    }));
                 }
                 UiMessage::StreamError(e) => {
                     app.streaming_state = StreamingState::Error(e);
@@ -123,6 +135,17 @@ async fn run_app(
                     app.download_progress = progress;
                 }
                 UiMessage::PlayerExited => {
+                    // Notify extensions before cleanup
+                    let watched_percent = app.download_progress.progress_percent;
+                    ext_manager.broadcast(PlaybackEvent::Stopped {
+                        media: MediaInfo {
+                            title: app.current_title.clone(),
+                            file_name: app.current_file.clone(),
+                            total_bytes: app.download_progress.total_bytes,
+                        },
+                        watched_percent,
+                    });
+
                     // Cleanup and go back to results
                     if let Some(session) = streaming_session.take() {
                         session.cleanup().await;
