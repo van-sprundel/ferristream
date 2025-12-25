@@ -18,6 +18,7 @@ use tracing::{debug, error, info};
 use crate::config::Config;
 use crate::doctor::{self, CheckResult};
 use crate::extensions::{ExtensionManager, MediaInfo, PlaybackEvent};
+use crate::opensubtitles::OpenSubtitlesClient;
 use crate::prowlarr::ProwlarrClient;
 use crate::streaming::{self, StreamingSession};
 use crate::tmdb::{parse_torrent_title, TmdbClient};
@@ -214,6 +215,7 @@ async fn run_app(
                                     if let Ok(results) = client.search_multi(&tmdb_query).await {
                                         if let Some(first) = results.first() {
                                             let info = TmdbMetadata {
+                                                id: Some(first.id),
                                                 title: first.display_title().to_string(),
                                                 year: first.year(),
                                                 overview: first.overview.clone(),
@@ -399,6 +401,10 @@ async fn run_app(
                                     let temp_dir = config.storage.temp_dir();
                                     let player_command = config.player.command.clone();
                                     let player_args = config.player.args.clone();
+                                    let subtitles_enabled = config.subtitles.enabled;
+                                    let preferred_language = config.subtitles.language.clone();
+                                    let opensubtitles_key = config.subtitles.opensubtitles_api_key.clone();
+                                    let tmdb_id = app.tmdb_info.as_ref().and_then(|t| t.id);
 
                                     // Spawn streaming task
                                     tokio::spawn(async move {
@@ -477,12 +483,59 @@ async fn run_app(
                                             }
                                         });
 
+                                        // Find best subtitle to use
+                                        let subtitle_url = if subtitles_enabled {
+                                            // First try to find subtitle in torrent matching preferred language
+                                            let from_torrent = torrent_info
+                                                .subtitle_files
+                                                .iter()
+                                                .find(|s| {
+                                                    s.language
+                                                        .as_ref()
+                                                        .map(|l| l == &preferred_language)
+                                                        .unwrap_or(false)
+                                                })
+                                                .or_else(|| torrent_info.subtitle_files.first())
+                                                .map(|s| s.stream_url.clone());
+
+                                            // If no subtitles in torrent, try OpenSubtitles
+                                            if from_torrent.is_some() {
+                                                from_torrent
+                                            } else if let (Some(api_key), Some(tmdb)) = (&opensubtitles_key, tmdb_id) {
+                                                info!("no subtitles in torrent, trying OpenSubtitles");
+                                                let os_client = OpenSubtitlesClient::new(api_key);
+                                                match os_client.search_by_tmdb(tmdb, &preferred_language).await {
+                                                    Ok(subs) => {
+                                                        if let Some(sub) = subs.first() {
+                                                            info!(file = %sub.file_name, "found subtitle on OpenSubtitles");
+                                                            Some(sub.download_url.clone())
+                                                        } else {
+                                                            None
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        debug!(error = %e, "OpenSubtitles search failed");
+                                                        None
+                                                    }
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        };
+
+                                        if let Some(ref sub) = subtitle_url {
+                                            info!(subtitle = %sub, "using subtitle");
+                                        }
+
                                         // Launch player
                                         info!(player = %player_command, "launching player");
                                         match streaming::launch_player(
                                             &player_command,
                                             &player_args,
                                             &torrent_info.stream_url,
+                                            subtitle_url.as_deref(),
                                         )
                                         .await
                                         {

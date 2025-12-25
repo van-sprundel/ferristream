@@ -14,6 +14,7 @@ pub enum View {
 /// TMDB metadata for the current search
 #[derive(Debug, Clone, Default)]
 pub struct TmdbMetadata {
+    pub id: Option<u64>,
     pub title: String,
     pub year: Option<u16>,
     pub overview: Option<String>,
