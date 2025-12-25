@@ -622,6 +622,18 @@ pub struct TorrentStats {
     pub peers_connected: u32,
 }
 
+/// Check if a file is a video file based on extension
+pub fn is_video_file(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    VIDEO_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Check if a file is a subtitle file based on extension
+pub fn is_subtitle_file(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    SUBTITLE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
 pub async fn launch_player(
     command: &str,
     args: &[String],
@@ -663,4 +675,51 @@ pub async fn launch_player(
 
     cmd.spawn()
         .map_err(|e| StreamError::PlayerError(command.to_string(), e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_subtitle_language() {
+        // English variations
+        assert_eq!(extract_subtitle_language("Movie.2024.eng.srt"), Some("en".to_string()));
+        assert_eq!(extract_subtitle_language("Movie.2024.English.srt"), Some("en".to_string()));
+        assert_eq!(extract_subtitle_language("Movie.2024.en.srt"), Some("en".to_string()));
+
+        // Other languages
+        assert_eq!(extract_subtitle_language("Movie.2024.spanish.srt"), Some("es".to_string()));
+        assert_eq!(extract_subtitle_language("Movie.2024.fre.srt"), Some("fr".to_string()));
+        assert_eq!(extract_subtitle_language("Movie.2024.ger.srt"), Some("de".to_string()));
+        assert_eq!(extract_subtitle_language("Movie.2024.jpn.srt"), Some("ja".to_string()));
+
+        // No language found
+        assert_eq!(extract_subtitle_language("Movie.2024.srt"), None);
+        assert_eq!(extract_subtitle_language("Movie.2024.forced.srt"), None);
+    }
+
+    #[test]
+    fn test_is_video_file() {
+        assert!(is_video_file("movie.mkv"));
+        assert!(is_video_file("Movie.2024.1080p.BluRay.MP4"));
+        assert!(is_video_file("video.avi"));
+        assert!(is_video_file("file.webm"));
+
+        assert!(!is_video_file("movie.srt"));
+        assert!(!is_video_file("movie.txt"));
+        assert!(!is_video_file("movie.nfo"));
+    }
+
+    #[test]
+    fn test_is_subtitle_file() {
+        assert!(is_subtitle_file("movie.srt"));
+        assert!(is_subtitle_file("Movie.English.SRT"));
+        assert!(is_subtitle_file("movie.ass"));
+        assert!(is_subtitle_file("movie.vtt"));
+
+        assert!(!is_subtitle_file("movie.mkv"));
+        assert!(!is_subtitle_file("movie.txt"));
+        assert!(!is_subtitle_file("movie.nfo"));
+    }
 }

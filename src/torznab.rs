@@ -230,3 +230,240 @@ impl TorznabClient {
         Ok(results)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_size_human() {
+        let result = TorrentResult {
+            title: "Test".to_string(),
+            link: None,
+            magnet_url: None,
+            infohash: None,
+            size: Some(1024 * 1024 * 1024), // 1 GB
+            seeders: None,
+            leechers: None,
+            indexer: "test".to_string(),
+        };
+        assert_eq!(result.size_human(), "1.00 GB");
+
+        let result = TorrentResult {
+            size: Some(500 * 1024 * 1024), // 500 MB
+            ..result.clone()
+        };
+        assert_eq!(result.size_human(), "500.0 MB");
+
+        let result = TorrentResult {
+            size: Some(2 * 1024 * 1024 * 1024 + 512 * 1024 * 1024), // 2.5 GB
+            ..result.clone()
+        };
+        assert_eq!(result.size_human(), "2.50 GB");
+
+        let result = TorrentResult {
+            size: None,
+            ..result.clone()
+        };
+        assert_eq!(result.size_human(), "?");
+    }
+
+    #[test]
+    fn test_get_torrent_url_magnet_priority() {
+        // Magnet URL should be preferred
+        let result = TorrentResult {
+            title: "Test".to_string(),
+            link: Some("http://example.com/torrent".to_string()),
+            magnet_url: Some("magnet:?xt=urn:btih:abc123".to_string()),
+            infohash: Some("def456".to_string()),
+            size: None,
+            seeders: None,
+            leechers: None,
+            indexer: "test".to_string(),
+        };
+        assert_eq!(result.get_torrent_url(), Some("magnet:?xt=urn:btih:abc123".to_string()));
+    }
+
+    #[test]
+    fn test_get_torrent_url_link_is_magnet() {
+        // Link that is a magnet URL
+        let result = TorrentResult {
+            title: "Test".to_string(),
+            link: Some("magnet:?xt=urn:btih:fromlink".to_string()),
+            magnet_url: None,
+            infohash: None,
+            size: None,
+            seeders: None,
+            leechers: None,
+            indexer: "test".to_string(),
+        };
+        assert_eq!(result.get_torrent_url(), Some("magnet:?xt=urn:btih:fromlink".to_string()));
+    }
+
+    #[test]
+    fn test_get_torrent_url_infohash_fallback() {
+        // Construct magnet from infohash
+        let result = TorrentResult {
+            title: "Test Movie".to_string(),
+            link: None,
+            magnet_url: None,
+            infohash: Some("abc123hash".to_string()),
+            size: None,
+            seeders: None,
+            leechers: None,
+            indexer: "test".to_string(),
+        };
+        let url = result.get_torrent_url().unwrap();
+        assert!(url.starts_with("magnet:?xt=urn:btih:abc123hash"));
+        assert!(url.contains("dn=Test%20Movie"));
+    }
+
+    #[test]
+    fn test_get_torrent_url_link_fallback() {
+        // Fall back to regular link
+        let result = TorrentResult {
+            title: "Test".to_string(),
+            link: Some("http://example.com/download.torrent".to_string()),
+            magnet_url: None,
+            infohash: None,
+            size: None,
+            seeders: None,
+            leechers: None,
+            indexer: "test".to_string(),
+        };
+        assert_eq!(result.get_torrent_url(), Some("http://example.com/download.torrent".to_string()));
+    }
+
+    #[test]
+    fn test_get_torrent_url_none() {
+        let result = TorrentResult {
+            title: "Test".to_string(),
+            link: None,
+            magnet_url: None,
+            infohash: None,
+            size: None,
+            seeders: None,
+            leechers: None,
+            indexer: "test".to_string(),
+        };
+        assert_eq!(result.get_torrent_url(), None);
+    }
+
+    #[test]
+    fn test_is_streamable() {
+        let streamable = TorrentResult {
+            title: "Test".to_string(),
+            link: None,
+            magnet_url: Some("magnet:?xt=...".to_string()),
+            infohash: None,
+            size: None,
+            seeders: None,
+            leechers: None,
+            indexer: "test".to_string(),
+        };
+        assert!(streamable.is_streamable());
+
+        let not_streamable = TorrentResult {
+            title: "Test".to_string(),
+            link: None,
+            magnet_url: None,
+            infohash: None,
+            size: None,
+            seeders: None,
+            leechers: None,
+            indexer: "test".to_string(),
+        };
+        assert!(!not_streamable.is_streamable());
+    }
+
+    #[test]
+    fn test_parse_response_basic() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Test Movie 2024 1080p</title>
+      <link>http://example.com/download</link>
+      <size>1073741824</size>
+      <torznab:attr name="seeders" value="50"/>
+      <torznab:attr name="leechers" value="10"/>
+      <torznab:attr name="magneturl" value="magnet:?xt=urn:btih:abc123"/>
+    </item>
+  </channel>
+</rss>"#;
+
+        let client = TorznabClient::new();
+        let results = client.parse_response(xml, "TestIndexer").unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Test Movie 2024 1080p");
+        assert_eq!(results[0].link, Some("http://example.com/download".to_string()));
+        assert_eq!(results[0].size, Some(1073741824));
+        assert_eq!(results[0].seeders, Some(50));
+        assert_eq!(results[0].leechers, Some(10));
+        assert_eq!(results[0].magnet_url, Some("magnet:?xt=urn:btih:abc123".to_string()));
+        assert_eq!(results[0].indexer, "TestIndexer");
+    }
+
+    #[test]
+    fn test_parse_response_multiple_items() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Movie One</title>
+      <torznab:attr name="seeders" value="100"/>
+    </item>
+    <item>
+      <title>Movie Two</title>
+      <torznab:attr name="seeders" value="50"/>
+    </item>
+    <item>
+      <title>Movie Three</title>
+      <torznab:attr name="seeders" value="25"/>
+    </item>
+  </channel>
+</rss>"#;
+
+        let client = TorznabClient::new();
+        let results = client.parse_response(xml, "Test").unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].title, "Movie One");
+        assert_eq!(results[0].seeders, Some(100));
+        assert_eq!(results[1].title, "Movie Two");
+        assert_eq!(results[2].title, "Movie Three");
+    }
+
+    #[test]
+    fn test_parse_response_with_infohash() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Test</title>
+      <torznab:attr name="infohash" value="abcdef1234567890"/>
+    </item>
+  </channel>
+</rss>"#;
+
+        let client = TorznabClient::new();
+        let results = client.parse_response(xml, "Test").unwrap();
+
+        assert_eq!(results[0].infohash, Some("abcdef1234567890".to_string()));
+    }
+
+    #[test]
+    fn test_parse_response_empty() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+  </channel>
+</rss>"#;
+
+        let client = TorznabClient::new();
+        let results = client.parse_response(xml, "Test").unwrap();
+
+        assert!(results.is_empty());
+    }
+}
