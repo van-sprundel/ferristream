@@ -8,14 +8,22 @@ use ratatui::{
 
 use crate::doctor::CheckStatus;
 
-use super::app::{App, StreamingState, View};
+use crate::config::Config;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+use super::app::{App, SettingsSection, StreamingState, View};
+
+pub fn draw(frame: &mut Frame, app: &App, config: Option<&Config>) {
     match app.view {
         View::Search => draw_search(frame, app),
         View::Results => draw_results(frame, app),
+        View::FileSelection => draw_file_selection(frame, app),
         View::Streaming => draw_streaming(frame, app),
         View::Doctor => draw_doctor(frame, app),
+        View::Settings => {
+            if let Some(cfg) = config {
+                draw_settings(frame, app, cfg);
+            }
+        }
     }
 }
 
@@ -114,7 +122,7 @@ fn draw_search(frame: &mut Frame, app: &App) {
         Paragraph::new("↑/↓: select | Tab: accept | Enter: search")
             .style(Style::default().fg(Color::DarkGray))
     } else {
-        Paragraph::new("Enter: search | d: doctor | Esc: quit")
+        Paragraph::new("Enter: search | s: settings | d: doctor | Esc: quit")
             .style(Style::default().fg(Color::DarkGray))
     };
     frame.render_widget(status, chunks[3]);
@@ -205,14 +213,76 @@ fn draw_results(frame: &mut Frame, app: &App) {
         })
         .collect();
 
+    let list_title = format!("Results [{}]", app.sort_order.label());
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Results"))
+        .block(Block::default().borders(Borders::ALL).title(list_title))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
     frame.render_widget(list, chunks[1]);
 
     // Help
-    let help = Paragraph::new("↑/↓: navigate | Enter: stream | /: new search | q: quit")
+    let help = Paragraph::new("↑/↓: navigate | Enter: stream | s: sort | /: new search | q: quit")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[2]);
+}
+
+fn draw_file_selection(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(0),    // File list
+            Constraint::Length(2), // Help
+        ])
+        .split(frame.area());
+
+    // Title with torrent name
+    let title = Paragraph::new(format!("Select file from: {}", app.current_title))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default().borders(Borders::BOTTOM));
+    frame.render_widget(title, chunks[0]);
+
+    // File list
+    let items: Vec<ListItem> = app
+        .available_files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let style = if i == app.selected_file_index {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let size_str = format_bytes(f.size);
+
+            let line = Line::from(vec![
+                Span::styled(format!("{:>8}", size_str), Style::default().fg(Color::DarkGray)),
+                Span::raw(" | "),
+                Span::raw(&f.name),
+            ]);
+
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    let list_title = format!("Files [{}]", app.available_files.len());
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(list_title))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+    frame.render_widget(list, chunks[1]);
+
+    // Help
+    let help = Paragraph::new("↑/↓: navigate | Enter: play | Esc: cancel")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[2]);
 }
@@ -368,6 +438,216 @@ fn draw_doctor(frame: &mut Frame, app: &App) {
     let help = Paragraph::new("r: run checks | q/Esc: back to search")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[2]);
+}
+
+fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .margin(1)
+        .constraints([
+            Constraint::Length(20), // Section list
+            Constraint::Min(0),     // Section content
+        ])
+        .split(frame.area());
+
+    // Section list (left panel)
+    let section_items: Vec<ListItem> = SettingsSection::ALL
+        .iter()
+        .map(|s| {
+            let style = if *s == app.settings_section {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(s.label()).style(style)
+        })
+        .collect();
+
+    let section_list = List::new(section_items)
+        .block(Block::default().borders(Borders::ALL).title("Settings"));
+    frame.render_widget(section_list, chunks[0]);
+
+    // Content panel (right side)
+    let content_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // Content
+            Constraint::Length(2), // Help
+        ])
+        .split(chunks[1]);
+
+    let content = match app.settings_section {
+        SettingsSection::Prowlarr => {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled("URL: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(&config.prowlarr.url),
+                ]),
+                Line::from(vec![
+                    Span::styled("API Key: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(mask_secret(&config.prowlarr.apikey)),
+                ]),
+            ];
+            lines
+        }
+        SettingsSection::Tmdb => {
+            if let Some(ref tmdb) = config.tmdb {
+                vec![Line::from(vec![
+                    Span::styled("API Key: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(mask_secret(&tmdb.apikey)),
+                ])]
+            } else {
+                vec![Line::from(Span::styled(
+                    "Not configured",
+                    Style::default().fg(Color::DarkGray),
+                ))]
+            }
+        }
+        SettingsSection::Player => {
+            vec![
+                Line::from(vec![
+                    Span::styled("Command: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(&config.player.command),
+                ]),
+                Line::from(vec![
+                    Span::styled("Args: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(if config.player.args.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        config.player.args.join(" ")
+                    }),
+                ]),
+            ]
+        }
+        SettingsSection::Subtitles => {
+            vec![
+                Line::from(vec![
+                    Span::styled("Enabled: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        if config.subtitles.enabled { "Yes" } else { "No" },
+                        Style::default().fg(if config.subtitles.enabled {
+                            Color::Green
+                        } else {
+                            Color::Red
+                        }),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Language: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(&config.subtitles.language),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        "OpenSubtitles Key: ",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(
+                        config
+                            .subtitles
+                            .opensubtitles_api_key
+                            .as_ref()
+                            .map(|k| mask_secret(k))
+                            .unwrap_or_else(|| "(not set)".to_string()),
+                    ),
+                ]),
+            ]
+        }
+        SettingsSection::Discord => {
+            vec![
+                Line::from(vec![
+                    Span::styled("Enabled: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        if config.extensions.discord.enabled {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                        Style::default().fg(if config.extensions.discord.enabled {
+                            Color::Green
+                        } else {
+                            Color::Red
+                        }),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("App ID: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(
+                        config
+                            .extensions
+                            .discord
+                            .app_id.as_deref()
+                            .unwrap_or("(using default)"),
+                    ),
+                ]),
+            ]
+        }
+        SettingsSection::Trakt => {
+            vec![
+                Line::from(vec![
+                    Span::styled("Enabled: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        if config.extensions.trakt.enabled { "Yes" } else { "No" },
+                        Style::default().fg(if config.extensions.trakt.enabled {
+                            Color::Green
+                        } else {
+                            Color::Red
+                        }),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Client ID: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(
+                        config
+                            .extensions
+                            .trakt
+                            .client_id
+                            .as_ref()
+                            .map(|k| mask_secret(k))
+                            .unwrap_or_else(|| "(not set)".to_string()),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        "Access Token: ",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(
+                        config
+                            .extensions
+                            .trakt
+                            .access_token
+                            .as_ref()
+                            .map(|k| mask_secret(k))
+                            .unwrap_or_else(|| "(not set)".to_string()),
+                    ),
+                ]),
+            ]
+        }
+    };
+
+    let content_widget = Paragraph::new(content).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(app.settings_section.label()),
+    );
+    frame.render_widget(content_widget, content_chunks[0]);
+
+    // Help
+    let help = Paragraph::new("↑/↓: navigate sections | Esc: back to search")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, content_chunks[1]);
+}
+
+/// Mask a secret string, showing only first/last 2 chars
+fn mask_secret(s: &str) -> String {
+    if s.len() <= 6 {
+        "*".repeat(s.len())
+    } else {
+        format!("{}...{}", &s[..2], &s[s.len() - 2..])
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
