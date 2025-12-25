@@ -4,7 +4,7 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
-librqbit = { version = "8.1.1", features = ["http-api", "tracing-subscriber-utils"] }
+librqbit = { version = "8.1.1", default-features = false, features = ["http-api", "tracing-subscriber-utils", "rust-tls"] }
 ratatui = "0.29.0"
 crossterm = "0.28"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
