@@ -21,6 +21,12 @@ apikey = "your-prowlarr-api-key"
 
 [player]
 command = "mpv"
+
+# Optional - auto-fetch subtitles
+[subtitles]
+enabled = true
+language = "en"
+opensubtitles_api_key = "your-key"  # from opensubtitles.com
 ```
 
 ## Usage

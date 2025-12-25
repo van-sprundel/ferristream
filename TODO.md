@@ -13,6 +13,9 @@ Search, select, watch but no permanent storage. Inspired by \*arr stack but for 
 
 ## laterons
 
+- edit config in TUI
+- support discord rich presence
+- sync watch history using trakt
 - subtitles
 - multi-episode handling (select a season, DL in background but be able to start first ep?)
   - ig we can support both seq streaming and downloading in bg. should this be temp?
