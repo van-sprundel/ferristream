@@ -1,12 +1,14 @@
 #![allow(unused)]
 
 mod config;
+mod extensions;
 mod prowlarr;
 mod streaming;
 mod torznab;
 mod tui;
 
 use config::Config;
+use extensions::{DiscordExtension, ExtensionManager, TraktExtension};
 use std::fs::File;
 use tracing_subscriber::EnvFilter;
 
@@ -59,7 +61,23 @@ command = "mpv"
         }
     };
 
-    if let Err(e) = tui::run(config).await {
+    // Initialize extensions
+    let mut ext_manager = ExtensionManager::new();
+
+    if config.extensions.discord.enabled {
+        ext_manager.register(Box::new(DiscordExtension::new()));
+    }
+
+    if config.extensions.trakt.enabled {
+        ext_manager.register(Box::new(TraktExtension::new(
+            config.extensions.trakt.client_id.clone(),
+            config.extensions.trakt.access_token.clone(),
+        )));
+    }
+
+    let result = tui::run(config, ext_manager).await;
+
+    if let Err(e) = result {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
