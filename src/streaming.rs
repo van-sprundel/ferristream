@@ -259,31 +259,48 @@ impl StreamingSession {
                 if !files.is_empty() {
                     info!(files = files.len(), "metadata received");
 
-                    // Find video file
-                    let video_file = files.iter().enumerate().find(|(_, f)| {
-                        let name = f.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                        VIDEO_EXTENSIONS
-                            .iter()
-                            .any(|ext| name.to_lowercase().ends_with(ext))
-                    });
+                    // Find all video files
+                    let video_files: Vec<VideoFile> = files
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, f)| {
+                            let name = f.get("name").and_then(|n| n.as_str())?;
+                            let name_lower = name.to_lowercase();
+                            if VIDEO_EXTENSIONS.iter().any(|ext| name_lower.ends_with(ext)) {
+                                let size = f.get("length").and_then(|l| l.as_u64()).unwrap_or(0);
+                                Some(VideoFile {
+                                    name: name.to_string(),
+                                    file_idx: idx,
+                                    size,
+                                    stream_url: format!(
+                                        "http://{}/torrents/{}/stream/{}",
+                                        self.http_addr, id, idx
+                                    ),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
 
-                    let (file_idx, file_info) = video_file.ok_or(StreamError::NoVideoFiles)?;
-                    let file_name = file_info
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
+                    if video_files.is_empty() {
+                        return Err(StreamError::NoVideoFiles);
+                    }
+
+                    info!(video_files = video_files.len(), "found video files");
+
+                    // Select the largest video file by default (usually the main content)
+                    let selected_file = video_files
+                        .iter()
+                        .max_by_key(|f| f.size)
+                        .cloned()
+                        .unwrap();
 
                     let torrent_name = details
                         .get("name")
                         .and_then(|n| n.as_str())
                         .unwrap_or("unknown")
                         .to_string();
-
-                    let stream_url = format!(
-                        "http://{}/torrents/{}/stream/{}",
-                        self.http_addr, id, file_idx
-                    );
 
                     // Find subtitle files
                     let subtitle_files: Vec<SubtitleFile> = files
@@ -314,9 +331,8 @@ impl StreamingSession {
                     return Ok(TorrentInfo {
                         id,
                         name: torrent_name,
-                        file_name,
-                        file_idx,
-                        stream_url,
+                        video_files,
+                        selected_file,
                         subtitle_files,
                     });
                 }
@@ -373,23 +389,48 @@ impl StreamingSession {
 
         let torrent_name = handle.name().unwrap_or_default();
 
-        // find video files
-        let (file_idx, file_name) = handle
+        // Find all video files
+        let http_addr = self.http_addr;
+        let video_files: Vec<VideoFile> = handle
             .with_metadata(|meta| {
                 meta.file_infos
                     .iter()
                     .enumerate()
-                    .find(|(_, f)| {
-                        let path = f.relative_filename.to_string_lossy().to_lowercase();
-                        VIDEO_EXTENSIONS.iter().any(|ext| path.ends_with(ext))
+                    .filter_map(|(idx, f)| {
+                        let path = f.relative_filename.to_string_lossy();
+                        let path_lower = path.to_lowercase();
+                        if VIDEO_EXTENSIONS.iter().any(|ext| path_lower.ends_with(ext)) {
+                            Some(VideoFile {
+                                name: path.to_string(),
+                                file_idx: idx,
+                                size: f.len,
+                                stream_url: format!(
+                                    "http://{}/torrents/{}/stream/{}",
+                                    http_addr, id, idx
+                                ),
+                            })
+                        } else {
+                            None
+                        }
                     })
-                    .map(|(idx, f)| (idx, f.relative_filename.to_string_lossy().to_string()))
+                    .collect()
             })
-            .map_err(|e| StreamError::TorrentError(e.to_string()))?
-            .ok_or(StreamError::NoVideoFiles)?;
+            .map_err(|e| StreamError::TorrentError(e.to_string()))?;
+
+        if video_files.is_empty() {
+            return Err(StreamError::NoVideoFiles);
+        }
+
+        info!(video_files = video_files.len(), "found video files");
+
+        // Select the largest video file by default (usually the main content)
+        let selected_file = video_files
+            .iter()
+            .max_by_key(|f| f.size)
+            .cloned()
+            .unwrap();
 
         // Find subtitle files
-        let http_addr = self.http_addr;
         let subtitle_files: Vec<SubtitleFile> = handle
             .with_metadata(|meta| {
                 meta.file_infos
@@ -419,17 +460,11 @@ impl StreamingSession {
 
         info!(subtitles = subtitle_files.len(), "found subtitle files");
 
-        let stream_url = format!(
-            "http://{}/torrents/{}/stream/{}",
-            self.http_addr, id, file_idx
-        );
-
         Ok(TorrentInfo {
             id,
             name: torrent_name,
-            file_name,
-            file_idx,
-            stream_url,
+            video_files,
+            selected_file,
             subtitle_files,
         })
     }
@@ -596,12 +631,21 @@ impl StreamingSession {
 }
 
 #[derive(Debug, Clone)]
+pub struct VideoFile {
+    pub name: String,
+    pub file_idx: usize,
+    pub size: u64,
+    pub stream_url: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct TorrentInfo {
     pub id: usize,
     pub name: String,
-    pub file_name: String,
-    pub file_idx: usize,
-    pub stream_url: String,
+    /// All video files found in the torrent
+    pub video_files: Vec<VideoFile>,
+    /// The selected video file (defaults to first/largest)
+    pub selected_file: VideoFile,
     pub subtitle_files: Vec<SubtitleFile>,
 }
 

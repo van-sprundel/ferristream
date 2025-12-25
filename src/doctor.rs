@@ -126,7 +126,7 @@ fn check_discord(config: &Config) -> CheckResult {
     if config.extensions.discord.app_id.is_some() {
         CheckResult::ok("Discord", "Extension enabled with app ID")
     } else {
-        CheckResult::warning("Discord", "Enabled but no app_id configured")
+        CheckResult::ok("Discord", "Enabled but no app_id configured")
     }
 }
 
@@ -154,10 +154,7 @@ fn check_player(config: &Config) -> CheckResult {
     // Check if player exists in PATH
     match which::which(player) {
         Ok(path) => CheckResult::ok("Player", &format!("{} found at {}", player, path.display())),
-        Err(_) => CheckResult::error(
-            "Player",
-            &format!("'{}' not found in PATH", player),
-        ),
+        Err(_) => CheckResult::error("Player", &format!("'{}' not found in PATH", player)),
     }
 }
 
@@ -172,10 +169,7 @@ fn check_storage(config: &Config) -> CheckResult {
                 let _ = std::fs::remove_file(&test_file);
                 CheckResult::ok("Storage", &format!("Temp dir: {}", temp_dir.display()))
             }
-            Err(e) => CheckResult::error(
-                "Storage",
-                &format!("Temp dir not writable: {}", e),
-            ),
+            Err(e) => CheckResult::error("Storage", &format!("Temp dir not writable: {}", e)),
         }
     } else {
         // Try to create it
@@ -184,10 +178,7 @@ fn check_storage(config: &Config) -> CheckResult {
                 "Storage",
                 &format!("Created temp dir: {}", temp_dir.display()),
             ),
-            Err(e) => CheckResult::error(
-                "Storage",
-                &format!("Cannot create temp dir: {}", e),
-            ),
+            Err(e) => CheckResult::error("Storage", &format!("Cannot create temp dir: {}", e)),
         }
     }
 }
@@ -223,7 +214,10 @@ pub fn print_results(results: &[CheckResult]) {
         println!("  {} error(s), {} warning(s)", errors, warnings);
         println!("  Fix errors above to use ferristream.\n");
     } else if warnings > 0 {
-        println!("  {} warning(s) - ferristream will work with limited features.\n", warnings);
+        println!(
+            "  {} warning(s) - ferristream will work with limited features.\n",
+            warnings
+        );
     } else {
         println!("  All checks passed!\n");
     }
