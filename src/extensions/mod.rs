@@ -10,6 +10,14 @@ pub struct MediaInfo {
     pub title: String,
     pub file_name: String,
     pub total_bytes: u64,
+    /// TMDB ID if available (for Trakt scrobbling)
+    pub tmdb_id: Option<u64>,
+    /// Year of release
+    pub year: Option<u32>,
+    /// Media type (movie or tv)
+    pub media_type: Option<String>,
+    /// Poster URL from TMDB (for Discord RPC)
+    pub poster_url: Option<String>,
 }
 
 /// Playback event sent to extensions

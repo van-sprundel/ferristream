@@ -21,17 +21,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 fn draw_search(frame: &mut Frame, app: &App) {
     let has_suggestions = !app.suggestions.is_empty();
-    let suggestion_height = if has_suggestions { app.suggestions.len() as u16 + 2 } else { 0 };
+    let suggestion_height = if has_suggestions {
+        app.suggestions.len() as u16 + 2
+    } else {
+        0
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(3),                // Title
-            Constraint::Length(3),                // Input
+            Constraint::Length(3),                 // Title
+            Constraint::Length(3),                 // Input
             Constraint::Length(suggestion_height), // Suggestions dropdown
-            Constraint::Length(3),                // Status/help
-            Constraint::Min(0),                   // Empty space
+            Constraint::Length(3),                 // Status/help
+            Constraint::Min(0),                    // Empty space
         ])
         .split(frame.area());
 
@@ -107,9 +111,11 @@ fn draw_search(frame: &mut Frame, app: &App) {
     } else if let Some(ref err) = app.search_error {
         Paragraph::new(err.as_str()).style(Style::default().fg(Color::Red))
     } else if has_suggestions {
-        Paragraph::new("↑/↓: select | Tab: accept | Enter: search").style(Style::default().fg(Color::DarkGray))
+        Paragraph::new("↑/↓: select | Tab: accept | Enter: search")
+            .style(Style::default().fg(Color::DarkGray))
     } else {
-        Paragraph::new("Enter: search | d: doctor | Esc/q: quit").style(Style::default().fg(Color::DarkGray))
+        Paragraph::new("Enter: search | d: doctor | Esc: quit")
+            .style(Style::default().fg(Color::DarkGray))
     };
     frame.render_widget(status, chunks[3]);
 }
@@ -138,16 +144,20 @@ fn draw_results(frame: &mut Frame, app: &App) {
     // Title / TMDB info
     if let Some(ref tmdb) = app.tmdb_info {
         let year_str = tmdb.year.map(|y| format!(" ({})", y)).unwrap_or_default();
-        let rating_str = tmdb.rating.map(|r| format!(" ★ {:.1}", r)).unwrap_or_default();
+        let rating_str = tmdb
+            .rating
+            .map(|r| format!(" ★ {:.1}", r))
+            .unwrap_or_default();
         let media_str = tmdb.media_type.as_deref().unwrap_or("");
 
-        let header = format!(
-            "{}{} [{}]{}",
-            tmdb.title, year_str, media_str, rating_str
-        );
+        let header = format!("{}{} [{}]{}", tmdb.title, year_str, media_str, rating_str);
 
         let title = Paragraph::new(header)
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .block(Block::default().borders(Borders::BOTTOM));
         frame.render_widget(title, chunks[0]);
     } else {
@@ -319,12 +329,12 @@ fn draw_doctor(frame: &mut Frame, app: &App) {
 
     // Results
     if app.is_checking {
-        let checking = Paragraph::new("Running checks...")
-            .style(Style::default().fg(Color::Yellow));
+        let checking =
+            Paragraph::new("Running checks...").style(Style::default().fg(Color::Yellow));
         frame.render_widget(checking, chunks[1]);
     } else if app.doctor_results.is_empty() {
-        let empty = Paragraph::new("Press 'r' to run checks")
-            .style(Style::default().fg(Color::DarkGray));
+        let empty =
+            Paragraph::new("Press 'r' to run checks").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, chunks[1]);
     } else {
         let items: Vec<ListItem> = app
@@ -350,11 +360,7 @@ fn draw_doctor(frame: &mut Frame, app: &App) {
             })
             .collect();
 
-        let list = List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Results"),
-        );
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Results"));
         frame.render_widget(list, chunks[1]);
     }
 
