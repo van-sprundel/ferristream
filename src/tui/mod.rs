@@ -1,7 +1,7 @@
 mod app;
 mod ui;
 
-pub use app::{App, DownloadProgress, StreamingState, TmdbMetadata, View};
+pub use app::{App, DownloadProgress, StreamingState, TmdbMetadata, TmdbSuggestion, View};
 
 use std::io;
 use std::time::Duration;
@@ -28,6 +28,7 @@ pub enum UiMessage {
     SearchComplete(Vec<TorrentResult>),
     SearchError(String),
     TmdbInfo(TmdbMetadata),
+    Suggestions(Vec<TmdbSuggestion>),
     StreamReady {
         file_name: String,
         stream_url: String,
@@ -121,6 +122,11 @@ async fn run_app(
                 }
                 UiMessage::TmdbInfo(info) => {
                     app.tmdb_info = Some(info);
+                }
+                UiMessage::Suggestions(suggestions) => {
+                    app.suggestions = suggestions;
+                    app.selected_suggestion = 0;
+                    app.is_fetching_suggestions = false;
                 }
                 UiMessage::DoctorComplete(results) => {
                     app.doctor_results = results;
@@ -311,11 +317,56 @@ async fn run_app(
                                 let _ = tx.send(UiMessage::DoctorComplete(results)).await;
                             });
                         }
+                        KeyCode::Tab if !app.suggestions.is_empty() => {
+                            // Accept selected suggestion
+                            if let Some(suggestion) = app.suggestions.get(app.selected_suggestion) {
+                                app.search_input = if let Some(year) = suggestion.year {
+                                    format!("{} {}", suggestion.title, year)
+                                } else {
+                                    suggestion.title.clone()
+                                };
+                                app.suggestions.clear();
+                            }
+                        }
+                        KeyCode::Down if !app.suggestions.is_empty() => {
+                            app.selected_suggestion =
+                                (app.selected_suggestion + 1).min(app.suggestions.len() - 1);
+                        }
+                        KeyCode::Up if !app.suggestions.is_empty() => {
+                            app.selected_suggestion = app.selected_suggestion.saturating_sub(1);
+                        }
                         KeyCode::Char(c) if !app.is_searching => {
                             app.search_input.push(c);
+                            app.suggestions.clear();
+
+                            // Fetch suggestions if input is long enough
+                            if app.search_input.len() >= 3 {
+                                let tx = tx.clone();
+                                let query = app.search_input.clone();
+                                let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+                                app.is_fetching_suggestions = true;
+
+                                tokio::spawn(async move {
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
+                                        if let Ok(results) = client.search_multi(&query).await {
+                                            let suggestions: Vec<TmdbSuggestion> = results
+                                                .into_iter()
+                                                .take(5)
+                                                .map(|r| TmdbSuggestion {
+                                                    title: r.display_title().to_string(),
+                                                    year: r.year(),
+                                                    media_type: r.media_type.unwrap_or_default(),
+                                                })
+                                                .collect();
+                                            let _ = tx.send(UiMessage::Suggestions(suggestions)).await;
+                                        }
+                                    }
+                                });
+                            }
                         }
                         KeyCode::Backspace if !app.is_searching => {
                             app.search_input.pop();
+                            app.suggestions.clear();
                         }
                         _ => {}
                     },

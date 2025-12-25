@@ -21,6 +21,14 @@ pub struct TmdbMetadata {
     pub media_type: Option<String>,
 }
 
+/// TMDB suggestion for autocomplete
+#[derive(Debug, Clone)]
+pub struct TmdbSuggestion {
+    pub title: String,
+    pub year: Option<u16>,
+    pub media_type: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamingState {
     Connecting,
@@ -49,6 +57,11 @@ pub struct App {
     pub is_searching: bool,
     pub search_error: Option<String>,
 
+    // Autocomplete
+    pub suggestions: Vec<TmdbSuggestion>,
+    pub selected_suggestion: usize,
+    pub is_fetching_suggestions: bool,
+
     // Results
     pub results: Vec<TorrentResult>,
     pub selected_index: usize,
@@ -74,6 +87,9 @@ impl App {
             search_input: String::new(),
             is_searching: false,
             search_error: None,
+            suggestions: Vec::new(),
+            selected_suggestion: 0,
+            is_fetching_suggestions: false,
             results: Vec::new(),
             selected_index: 0,
             tmdb_info: None,
