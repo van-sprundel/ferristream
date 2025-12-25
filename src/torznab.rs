@@ -287,7 +287,10 @@ mod tests {
             leechers: None,
             indexer: "test".to_string(),
         };
-        assert_eq!(result.get_torrent_url(), Some("magnet:?xt=urn:btih:abc123".to_string()));
+        assert_eq!(
+            result.get_torrent_url(),
+            Some("magnet:?xt=urn:btih:abc123".to_string())
+        );
     }
 
     #[test]
@@ -303,7 +306,10 @@ mod tests {
             leechers: None,
             indexer: "test".to_string(),
         };
-        assert_eq!(result.get_torrent_url(), Some("magnet:?xt=urn:btih:fromlink".to_string()));
+        assert_eq!(
+            result.get_torrent_url(),
+            Some("magnet:?xt=urn:btih:fromlink".to_string())
+        );
     }
 
     #[test]
@@ -337,7 +343,10 @@ mod tests {
             leechers: None,
             indexer: "test".to_string(),
         };
-        assert_eq!(result.get_torrent_url(), Some("http://example.com/download.torrent".to_string()));
+        assert_eq!(
+            result.get_torrent_url(),
+            Some("http://example.com/download.torrent".to_string())
+        );
     }
 
     #[test]
@@ -403,11 +412,17 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Test Movie 2024 1080p");
-        assert_eq!(results[0].link, Some("http://example.com/download".to_string()));
+        assert_eq!(
+            results[0].link,
+            Some("http://example.com/download".to_string())
+        );
         assert_eq!(results[0].size, Some(1073741824));
         assert_eq!(results[0].seeders, Some(50));
         assert_eq!(results[0].leechers, Some(10));
-        assert_eq!(results[0].magnet_url, Some("magnet:?xt=urn:btih:abc123".to_string()));
+        assert_eq!(
+            results[0].magnet_url,
+            Some("magnet:?xt=urn:btih:abc123".to_string())
+        );
         assert_eq!(results[0].indexer, "TestIndexer");
     }
 
