@@ -265,7 +265,10 @@ fn draw_file_selection(frame: &mut Frame, app: &App) {
             let size_str = format_bytes(f.size);
 
             let line = Line::from(vec![
-                Span::styled(format!("{:>8}", size_str), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:>8}", size_str),
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::raw(" | "),
                 Span::raw(&f.name),
             ]);
@@ -466,8 +469,8 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
         })
         .collect();
 
-    let section_list = List::new(section_items)
-        .block(Block::default().borders(Borders::ALL).title("Settings"));
+    let section_list =
+        List::new(section_items).block(Block::default().borders(Borders::ALL).title("Settings"));
     frame.render_widget(section_list, chunks[0]);
 
     // Content panel (right side)
@@ -527,7 +530,11 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                 Line::from(vec![
                     Span::styled("Enabled: ", Style::default().add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        if config.subtitles.enabled { "Yes" } else { "No" },
+                        if config.subtitles.enabled {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
                         Style::default().fg(if config.subtitles.enabled {
                             Color::Green
                         } else {
@@ -578,7 +585,8 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                         config
                             .extensions
                             .discord
-                            .app_id.as_deref()
+                            .app_id
+                            .as_deref()
                             .unwrap_or("(using default)"),
                     ),
                 ]),
@@ -589,7 +597,11 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                 Line::from(vec![
                     Span::styled("Enabled: ", Style::default().add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        if config.extensions.trakt.enabled { "Yes" } else { "No" },
+                        if config.extensions.trakt.enabled {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
                         Style::default().fg(if config.extensions.trakt.enabled {
                             Color::Green
                         } else {

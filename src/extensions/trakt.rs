@@ -84,7 +84,9 @@ impl TraktExtension {
                 show: Some(ScrobbleShow {
                     title: media.title.clone(),
                     year: media.year,
-                    ids: ScrobbleIds { tmdb: Some(tmdb_id) },
+                    ids: ScrobbleIds {
+                        tmdb: Some(tmdb_id),
+                    },
                 }),
                 episode: None, // TODO: Parse season/episode from filename
                 progress,
@@ -94,7 +96,9 @@ impl TraktExtension {
                 movie: Some(ScrobbleMovie {
                     title: media.title.clone(),
                     year: media.year,
-                    ids: ScrobbleIds { tmdb: Some(tmdb_id) },
+                    ids: ScrobbleIds {
+                        tmdb: Some(tmdb_id),
+                    },
                 }),
                 show: None,
                 episode: None,

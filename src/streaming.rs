@@ -49,19 +49,45 @@ fn extract_subtitle_language(filename: &str) -> Option<String> {
 
     // Common language patterns in subtitle filenames
     let languages = [
-        ("english", "en"), ("eng", "en"), (".en.", "en"),
-        ("spanish", "es"), ("esp", "es"), (".es.", "es"),
-        ("french", "fr"), ("fre", "fr"), (".fr.", "fr"),
-        ("german", "de"), ("ger", "de"), (".de.", "de"),
-        ("italian", "it"), ("ita", "it"), (".it.", "it"),
-        ("portuguese", "pt"), ("por", "pt"), (".pt.", "pt"),
-        ("russian", "ru"), ("rus", "ru"), (".ru.", "ru"),
-        ("japanese", "ja"), ("jpn", "ja"), (".ja.", "ja"),
-        ("korean", "ko"), ("kor", "ko"), (".ko.", "ko"),
-        ("chinese", "zh"), ("chi", "zh"), (".zh.", "zh"),
-        ("dutch", "nl"), ("dut", "nl"), (".nl.", "nl"),
-        ("swedish", "sv"), ("swe", "sv"), (".sv.", "sv"),
-        ("arabic", "ar"), ("ara", "ar"), (".ar.", "ar"),
+        ("english", "en"),
+        ("eng", "en"),
+        (".en.", "en"),
+        ("spanish", "es"),
+        ("esp", "es"),
+        (".es.", "es"),
+        ("french", "fr"),
+        ("fre", "fr"),
+        (".fr.", "fr"),
+        ("german", "de"),
+        ("ger", "de"),
+        (".de.", "de"),
+        ("italian", "it"),
+        ("ita", "it"),
+        (".it.", "it"),
+        ("portuguese", "pt"),
+        ("por", "pt"),
+        (".pt.", "pt"),
+        ("russian", "ru"),
+        ("rus", "ru"),
+        (".ru.", "ru"),
+        ("japanese", "ja"),
+        ("jpn", "ja"),
+        (".ja.", "ja"),
+        ("korean", "ko"),
+        ("kor", "ko"),
+        (".ko.", "ko"),
+        ("chinese", "zh"),
+        ("chi", "zh"),
+        (".zh.", "zh"),
+        ("dutch", "nl"),
+        ("dut", "nl"),
+        (".nl.", "nl"),
+        ("swedish", "sv"),
+        ("swe", "sv"),
+        (".sv.", "sv"),
+        ("arabic", "ar"),
+        ("ara", "ar"),
+        (".ar.", "ar"),
     ];
 
     for (pattern, code) in languages {
@@ -290,11 +316,7 @@ impl StreamingSession {
                     info!(video_files = video_files.len(), "found video files");
 
                     // Select the largest video file by default (usually the main content)
-                    let selected_file = video_files
-                        .iter()
-                        .max_by_key(|f| f.size)
-                        .cloned()
-                        .unwrap();
+                    let selected_file = video_files.iter().max_by_key(|f| f.size).cloned().unwrap();
 
                     let torrent_name = details
                         .get("name")
@@ -309,7 +331,10 @@ impl StreamingSession {
                         .filter_map(|(idx, f)| {
                             let name = f.get("name").and_then(|n| n.as_str())?;
                             let name_lower = name.to_lowercase();
-                            if SUBTITLE_EXTENSIONS.iter().any(|ext| name_lower.ends_with(ext)) {
+                            if SUBTITLE_EXTENSIONS
+                                .iter()
+                                .any(|ext| name_lower.ends_with(ext))
+                            {
                                 let language = extract_subtitle_language(name);
                                 Some(SubtitleFile {
                                     name: name.to_string(),
@@ -424,11 +449,7 @@ impl StreamingSession {
         info!(video_files = video_files.len(), "found video files");
 
         // Select the largest video file by default (usually the main content)
-        let selected_file = video_files
-            .iter()
-            .max_by_key(|f| f.size)
-            .cloned()
-            .unwrap();
+        let selected_file = video_files.iter().max_by_key(|f| f.size).cloned().unwrap();
 
         // Find subtitle files
         let subtitle_files: Vec<SubtitleFile> = handle
@@ -439,7 +460,10 @@ impl StreamingSession {
                     .filter_map(|(idx, f)| {
                         let path = f.relative_filename.to_string_lossy();
                         let path_lower = path.to_lowercase();
-                        if SUBTITLE_EXTENSIONS.iter().any(|ext| path_lower.ends_with(ext)) {
+                        if SUBTITLE_EXTENSIONS
+                            .iter()
+                            .any(|ext| path_lower.ends_with(ext))
+                        {
                             let language = extract_subtitle_language(&path);
                             Some(SubtitleFile {
                                 name: path.to_string(),
@@ -728,15 +752,36 @@ mod tests {
     #[test]
     fn test_extract_subtitle_language() {
         // English variations
-        assert_eq!(extract_subtitle_language("Movie.2024.eng.srt"), Some("en".to_string()));
-        assert_eq!(extract_subtitle_language("Movie.2024.English.srt"), Some("en".to_string()));
-        assert_eq!(extract_subtitle_language("Movie.2024.en.srt"), Some("en".to_string()));
+        assert_eq!(
+            extract_subtitle_language("Movie.2024.eng.srt"),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            extract_subtitle_language("Movie.2024.English.srt"),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            extract_subtitle_language("Movie.2024.en.srt"),
+            Some("en".to_string())
+        );
 
         // Other languages
-        assert_eq!(extract_subtitle_language("Movie.2024.spanish.srt"), Some("es".to_string()));
-        assert_eq!(extract_subtitle_language("Movie.2024.fre.srt"), Some("fr".to_string()));
-        assert_eq!(extract_subtitle_language("Movie.2024.ger.srt"), Some("de".to_string()));
-        assert_eq!(extract_subtitle_language("Movie.2024.jpn.srt"), Some("ja".to_string()));
+        assert_eq!(
+            extract_subtitle_language("Movie.2024.spanish.srt"),
+            Some("es".to_string())
+        );
+        assert_eq!(
+            extract_subtitle_language("Movie.2024.fre.srt"),
+            Some("fr".to_string())
+        );
+        assert_eq!(
+            extract_subtitle_language("Movie.2024.ger.srt"),
+            Some("de".to_string())
+        );
+        assert_eq!(
+            extract_subtitle_language("Movie.2024.jpn.srt"),
+            Some("ja".to_string())
+        );
 
         // No language found
         assert_eq!(extract_subtitle_language("Movie.2024.srt"), None);

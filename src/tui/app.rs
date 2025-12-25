@@ -256,10 +256,12 @@ impl App {
                 self.results.sort_by(|a, b| a.size.cmp(&b.size));
             }
             SortOrder::NameAsc => {
-                self.results.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+                self.results
+                    .sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
             }
             SortOrder::NameDesc => {
-                self.results.sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()));
+                self.results
+                    .sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()));
             }
         }
         // Keep selection valid
@@ -271,7 +273,8 @@ impl App {
     // File selection helpers
     pub fn select_next_file(&mut self) {
         if !self.available_files.is_empty() {
-            self.selected_file_index = (self.selected_file_index + 1).min(self.available_files.len() - 1);
+            self.selected_file_index =
+                (self.selected_file_index + 1).min(self.available_files.len() - 1);
         }
     }
 

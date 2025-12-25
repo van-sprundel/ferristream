@@ -19,11 +19,11 @@ pub enum TmdbError {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchResult {
     pub id: u64,
-    pub title: Option<String>,       // Movies
-    pub name: Option<String>,        // TV shows
+    pub title: Option<String>, // Movies
+    pub name: Option<String>,  // TV shows
     pub overview: Option<String>,
-    pub release_date: Option<String>,    // Movies
-    pub first_air_date: Option<String>,  // TV shows
+    pub release_date: Option<String>,   // Movies
+    pub first_air_date: Option<String>, // TV shows
     pub vote_average: Option<f64>,
     pub poster_path: Option<String>,
     pub backdrop_path: Option<String>,
@@ -32,21 +32,24 @@ pub struct SearchResult {
 
 impl SearchResult {
     pub fn display_title(&self) -> &str {
-        self.title.as_deref()
+        self.title
+            .as_deref()
             .or(self.name.as_deref())
             .unwrap_or("Unknown")
     }
 
     pub fn year(&self) -> Option<u16> {
-        let date = self.release_date.as_deref()
+        let date = self
+            .release_date
+            .as_deref()
             .or(self.first_air_date.as_deref())?;
         date.split('-').next()?.parse().ok()
     }
 
     pub fn poster_url(&self, size: &str) -> Option<String> {
-        self.poster_path.as_ref().map(|p| {
-            format!("https://image.tmdb.org/t/p/{}{}", size, p)
-        })
+        self.poster_path
+            .as_ref()
+            .map(|p| format!("https://image.tmdb.org/t/p/{}{}", size, p))
     }
 }
 
@@ -92,18 +95,17 @@ impl TmdbClient {
 
         debug!(query, "searching TMDB");
 
-        let response: SearchResponse = self.client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
 
         Ok(response.results)
     }
 
     /// Search for movies only
-    pub async fn search_movie(&self, query: &str, year: Option<u16>) -> Result<Vec<SearchResult>, TmdbError> {
+    pub async fn search_movie(
+        &self,
+        query: &str,
+        year: Option<u16>,
+    ) -> Result<Vec<SearchResult>, TmdbError> {
         let mut url = format!(
             "{}/3/search/movie?api_key={}&query={}",
             self.base_url,
@@ -115,18 +117,17 @@ impl TmdbClient {
             url.push_str(&format!("&year={}", y));
         }
 
-        let response: SearchResponse = self.client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
 
         Ok(response.results)
     }
 
     /// Search for TV shows only
-    pub async fn search_tv(&self, query: &str, year: Option<u16>) -> Result<Vec<SearchResult>, TmdbError> {
+    pub async fn search_tv(
+        &self,
+        query: &str,
+        year: Option<u16>,
+    ) -> Result<Vec<SearchResult>, TmdbError> {
         let mut url = format!(
             "{}/3/search/tv?api_key={}&query={}",
             self.base_url,
@@ -138,12 +139,7 @@ impl TmdbClient {
             url.push_str(&format!("&first_air_date_year={}", y));
         }
 
-        let response: SearchResponse = self.client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
 
         Ok(response.results)
     }
@@ -154,13 +150,45 @@ impl TmdbClient {
 pub fn parse_torrent_title(torrent_name: &str) -> (String, Option<u16>) {
     // Common patterns to remove
     let quality_patterns = [
-        "2160p", "1080p", "720p", "480p", "4k", "uhd",
-        "bluray", "blu-ray", "bdrip", "brrip", "webrip", "web-dl", "webdl",
-        "hdtv", "dvdrip", "hdrip", "remux",
-        "x264", "x265", "hevc", "h264", "h265", "avc",
-        "aac", "ac3", "dts", "truehd", "atmos", "flac",
-        "hdr", "hdr10", "dolby", "vision", "dv",
-        "extended", "directors", "cut", "remastered", "proper",
+        "2160p",
+        "1080p",
+        "720p",
+        "480p",
+        "4k",
+        "uhd",
+        "bluray",
+        "blu-ray",
+        "bdrip",
+        "brrip",
+        "webrip",
+        "web-dl",
+        "webdl",
+        "hdtv",
+        "dvdrip",
+        "hdrip",
+        "remux",
+        "x264",
+        "x265",
+        "hevc",
+        "h264",
+        "h265",
+        "avc",
+        "aac",
+        "ac3",
+        "dts",
+        "truehd",
+        "atmos",
+        "flac",
+        "hdr",
+        "hdr10",
+        "dolby",
+        "vision",
+        "dv",
+        "extended",
+        "directors",
+        "cut",
+        "remastered",
+        "proper",
     ];
 
     let mut name = torrent_name.to_lowercase();
@@ -187,10 +215,7 @@ pub fn parse_torrent_title(torrent_name: &str) -> (String, Option<u16>) {
     }
 
     // Clean up whitespace
-    let clean_title: String = name
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let clean_title: String = name.split_whitespace().collect::<Vec<_>>().join(" ");
 
     // Title case
     let title = clean_title

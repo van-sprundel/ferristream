@@ -1,7 +1,10 @@
 mod app;
 mod ui;
 
-pub use app::{App, DownloadProgress, SettingsSection, SortOrder, StreamingState, TmdbMetadata, TmdbSuggestion, View};
+pub use app::{
+    App, DownloadProgress, SettingsSection, SortOrder, StreamingState, TmdbMetadata,
+    TmdbSuggestion, View,
+};
 
 use std::io;
 use std::time::Duration;
@@ -156,10 +159,14 @@ async fn run_app(
 
                     if torrent_info.video_files.len() > 1 {
                         // Multiple files - show selection UI
-                        info!(files = torrent_info.video_files.len(), "multiple video files, showing selection");
+                        info!(
+                            files = torrent_info.video_files.len(),
+                            "multiple video files, showing selection"
+                        );
                         // Sort by name for easier navigation (episodes usually have similar naming)
                         let mut sorted_files = torrent_info.video_files.clone();
-                        sorted_files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        sorted_files
+                            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         app.available_files = sorted_files;
                         app.selected_file_index = 0;
                         app.view = View::FileSelection;
@@ -204,7 +211,9 @@ async fn run_app(
                             let progress_handle = tokio::spawn(async move {
                                 loop {
                                     tokio::time::sleep(Duration::from_millis(500)).await;
-                                    if let Some(stats) = progress_session.get_stats(torrent_id).await {
+                                    if let Some(stats) =
+                                        progress_session.get_stats(torrent_id).await
+                                    {
                                         let progress = DownloadProgress {
                                             downloaded_bytes: stats.downloaded_bytes,
                                             total_bytes: stats.total_bytes,
@@ -212,12 +221,18 @@ async fn run_app(
                                             upload_speed: stats.upload_speed,
                                             peers_connected: stats.peers_connected,
                                             progress_percent: if stats.total_bytes > 0 {
-                                                (stats.downloaded_bytes as f64 / stats.total_bytes as f64) * 100.0
+                                                (stats.downloaded_bytes as f64
+                                                    / stats.total_bytes as f64)
+                                                    * 100.0
                                             } else {
                                                 0.0
                                             },
                                         };
-                                        if progress_tx.send(UiMessage::ProgressUpdate(progress)).await.is_err() {
+                                        if progress_tx
+                                            .send(UiMessage::ProgressUpdate(progress))
+                                            .await
+                                            .is_err()
+                                        {
                                             break;
                                         }
                                     }
@@ -228,16 +243,24 @@ async fn run_app(
                             let subtitle_url = if subtitles_enabled {
                                 let from_torrent = subtitle_files
                                     .iter()
-                                    .find(|s| s.language.as_ref().map(|l| l == &preferred_language).unwrap_or(false))
+                                    .find(|s| {
+                                        s.language
+                                            .as_ref()
+                                            .map(|l| l == &preferred_language)
+                                            .unwrap_or(false)
+                                    })
                                     .or_else(|| subtitle_files.first())
                                     .map(|s| s.stream_url.clone());
 
                                 if from_torrent.is_some() {
                                     from_torrent
-                                } else if let (Some(api_key), Some(tmdb)) = (&opensubtitles_key, tmdb_id) {
+                                } else if let (Some(api_key), Some(tmdb)) =
+                                    (&opensubtitles_key, tmdb_id)
+                                {
                                     info!("no subtitles in torrent, trying OpenSubtitles");
                                     let os_client = OpenSubtitlesClient::new(api_key);
-                                    match os_client.search_by_tmdb(tmdb, &preferred_language).await {
+                                    match os_client.search_by_tmdb(tmdb, &preferred_language).await
+                                    {
                                         Ok(subs) => subs.first().map(|s| s.download_url.clone()),
                                         Err(e) => {
                                             debug!(error = %e, "OpenSubtitles search failed");
@@ -259,7 +282,14 @@ async fn run_app(
                             }
 
                             info!(player = %player_command, "launching player");
-                            match streaming::launch_player(&player_command, &player_args, &stream_url, subtitle_url.as_deref()).await {
+                            match streaming::launch_player(
+                                &player_command,
+                                &player_args,
+                                &stream_url,
+                                subtitle_url.as_deref(),
+                            )
+                            .await
+                            {
                                 Ok(mut child) => {
                                     // Wait for either player to exit OR cancellation
                                     tokio::select! {
@@ -527,7 +557,8 @@ async fn run_app(
                                                     media_type: r.media_type.unwrap_or_default(),
                                                 })
                                                 .collect();
-                                            let _ = tx.send(UiMessage::Suggestions(suggestions)).await;
+                                            let _ =
+                                                tx.send(UiMessage::Suggestions(suggestions)).await;
                                         }
                                     }
                                 });
@@ -557,7 +588,8 @@ async fn run_app(
                                                     media_type: r.media_type.unwrap_or_default(),
                                                 })
                                                 .collect();
-                                            let _ = tx.send(UiMessage::Suggestions(suggestions)).await;
+                                            let _ =
+                                                tx.send(UiMessage::Suggestions(suggestions)).await;
                                         }
                                     }
                                 });
@@ -588,13 +620,17 @@ async fn run_app(
                                 if let Some(url) = result.get_torrent_url() {
                                     info!(title = %result.title, "starting stream");
                                     // Use TMDB title if available, otherwise torrent title
-                                    app.current_title = app.tmdb_info.as_ref()
+                                    app.current_title = app
+                                        .tmdb_info
+                                        .as_ref()
                                         .map(|t| t.title.clone())
                                         .unwrap_or_else(|| result.title.clone());
                                     app.current_tmdb_id = app.tmdb_info.as_ref().and_then(|t| t.id);
                                     app.current_year = app.tmdb_info.as_ref().and_then(|t| t.year);
-                                    app.current_media_type = app.tmdb_info.as_ref().and_then(|t| t.media_type.clone());
-                                    app.current_poster_url = app.tmdb_info.as_ref().and_then(|t| t.poster_url.clone());
+                                    app.current_media_type =
+                                        app.tmdb_info.as_ref().and_then(|t| t.media_type.clone());
+                                    app.current_poster_url =
+                                        app.tmdb_info.as_ref().and_then(|t| t.poster_url.clone());
                                     app.view = View::Streaming;
                                     app.streaming_state = StreamingState::Connecting;
                                     app.download_progress = DownloadProgress::default();
@@ -638,7 +674,10 @@ async fn run_app(
                                         info!("adding torrent");
                                         let torrent_info = match session.add_torrent(&url).await {
                                             Ok(info) => {
-                                                info!(files = info.video_files.len(), "torrent added");
+                                                info!(
+                                                    files = info.video_files.len(),
+                                                    "torrent added"
+                                                );
                                                 info
                                             }
                                             Err(e) => {
@@ -715,7 +754,8 @@ async fn run_app(
                                 let player_args = config.player.args.clone();
                                 let subtitles_enabled = config.subtitles.enabled;
                                 let preferred_language = config.subtitles.language.clone();
-                                let opensubtitles_key = config.subtitles.opensubtitles_api_key.clone();
+                                let opensubtitles_key =
+                                    config.subtitles.opensubtitles_api_key.clone();
                                 let tmdb_id = app.current_tmdb_id;
                                 let subtitle_files = torrent_info.subtitle_files.clone();
                                 let stream_url = file.stream_url.clone();
@@ -729,7 +769,9 @@ async fn run_app(
                                     let progress_handle = tokio::spawn(async move {
                                         loop {
                                             tokio::time::sleep(Duration::from_millis(500)).await;
-                                            if let Some(stats) = progress_session.get_stats(torrent_id).await {
+                                            if let Some(stats) =
+                                                progress_session.get_stats(torrent_id).await
+                                            {
                                                 let progress = DownloadProgress {
                                                     downloaded_bytes: stats.downloaded_bytes,
                                                     total_bytes: stats.total_bytes,
@@ -737,12 +779,18 @@ async fn run_app(
                                                     upload_speed: stats.upload_speed,
                                                     peers_connected: stats.peers_connected,
                                                     progress_percent: if stats.total_bytes > 0 {
-                                                        (stats.downloaded_bytes as f64 / stats.total_bytes as f64) * 100.0
+                                                        (stats.downloaded_bytes as f64
+                                                            / stats.total_bytes as f64)
+                                                            * 100.0
                                                     } else {
                                                         0.0
                                                     },
                                                 };
-                                                if progress_tx.send(UiMessage::ProgressUpdate(progress)).await.is_err() {
+                                                if progress_tx
+                                                    .send(UiMessage::ProgressUpdate(progress))
+                                                    .await
+                                                    .is_err()
+                                                {
                                                     break;
                                                 }
                                             }
@@ -753,17 +801,29 @@ async fn run_app(
                                     let subtitle_url = if subtitles_enabled {
                                         let from_torrent = subtitle_files
                                             .iter()
-                                            .find(|s| s.language.as_ref().map(|l| l == &preferred_language).unwrap_or(false))
+                                            .find(|s| {
+                                                s.language
+                                                    .as_ref()
+                                                    .map(|l| l == &preferred_language)
+                                                    .unwrap_or(false)
+                                            })
                                             .or_else(|| subtitle_files.first())
                                             .map(|s| s.stream_url.clone());
 
                                         if from_torrent.is_some() {
                                             from_torrent
-                                        } else if let (Some(api_key), Some(tmdb)) = (&opensubtitles_key, tmdb_id) {
+                                        } else if let (Some(api_key), Some(tmdb)) =
+                                            (&opensubtitles_key, tmdb_id)
+                                        {
                                             info!("no subtitles in torrent, trying OpenSubtitles");
                                             let os_client = OpenSubtitlesClient::new(api_key);
-                                            match os_client.search_by_tmdb(tmdb, &preferred_language).await {
-                                                Ok(subs) => subs.first().map(|s| s.download_url.clone()),
+                                            match os_client
+                                                .search_by_tmdb(tmdb, &preferred_language)
+                                                .await
+                                            {
+                                                Ok(subs) => {
+                                                    subs.first().map(|s| s.download_url.clone())
+                                                }
                                                 Err(e) => {
                                                     debug!(error = %e, "OpenSubtitles search failed");
                                                     None
@@ -784,7 +844,14 @@ async fn run_app(
                                     }
 
                                     info!(player = %player_command, "launching player");
-                                    match streaming::launch_player(&player_command, &player_args, &stream_url, subtitle_url.as_deref()).await {
+                                    match streaming::launch_player(
+                                        &player_command,
+                                        &player_args,
+                                        &stream_url,
+                                        subtitle_url.as_deref(),
+                                    )
+                                    .await
+                                    {
                                         Ok(mut child) => {
                                             // Wait for either player to exit OR cancellation
                                             tokio::select! {
@@ -799,7 +866,9 @@ async fn run_app(
                                         }
                                         Err(e) => {
                                             error!(error = %e, "failed to launch player");
-                                            let _ = tx.send(UiMessage::StreamError(e.to_string())).await;
+                                            let _ = tx
+                                                .send(UiMessage::StreamError(e.to_string()))
+                                                .await;
                                             progress_handle.abort();
                                             return;
                                         }
