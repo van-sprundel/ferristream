@@ -21,7 +21,8 @@ jobs:
         with:
           components: clippy
       - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.7
+        uses: mozilla-actions/sccache-action@v0.0.9
+        continue-on-error: true
       - name: Check formatting
         run: cargo fmt --check
 

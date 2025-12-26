@@ -267,7 +267,9 @@ impl StreamingSession {
             }
         }
 
-        Err(StreamError::TorrentError("no matching torrents found".to_string()))
+        Err(StreamError::TorrentError(
+            "no matching torrents found".to_string(),
+        ))
     }
 }
 
@@ -282,7 +284,10 @@ pub struct TorrentValidation {
 
 impl TorrentValidation {
     pub fn new(title_keywords: Vec<String>, year: Option<u16>) -> Self {
-        Self { title_keywords, year }
+        Self {
+            title_keywords,
+            year,
+        }
     }
 
     /// Check if a filename matches the validation criteria
@@ -291,7 +296,10 @@ impl TorrentValidation {
 
         // Check title keywords - at least one must match
         let title_matches = self.title_keywords.is_empty()
-            || self.title_keywords.iter().any(|kw| filename_lower.contains(kw));
+            || self
+                .title_keywords
+                .iter()
+                .any(|kw| filename_lower.contains(kw));
 
         // Check year if specified
         let year_matches = match self.year {
@@ -304,7 +312,9 @@ impl TorrentValidation {
 
     /// Extract title keywords from a query string
     pub fn extract_keywords(query: &str) -> Vec<String> {
-        let stop_words = ["the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for"];
+        let stop_words = [
+            "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for",
+        ];
         query
             .split(|c: char| !c.is_alphanumeric())
             .filter(|word| word.len() >= 3)
@@ -545,7 +555,7 @@ impl StreamingSession {
                 (id, handle)
             }
             AddTorrentResponse::ListOnly(_) => {
-                return Err(StreamError::TorrentError("list only response".to_string()))
+                return Err(StreamError::TorrentError("list only response".to_string()));
             }
         };
 
@@ -645,7 +655,11 @@ impl StreamingSession {
 
     /// Prioritize downloading a specific file by making a range request
     /// This triggers librqbit to prioritize pieces for that file
-    pub async fn prioritize_file(&self, torrent_id: usize, file_idx: usize) -> Result<(), StreamError> {
+    pub async fn prioritize_file(
+        &self,
+        torrent_id: usize,
+        file_idx: usize,
+    ) -> Result<(), StreamError> {
         let url = format!(
             "http://{}/torrents/{}/stream/{}",
             self.http_addr, torrent_id, file_idx
@@ -934,7 +948,8 @@ pub async fn launch_player(
     // Only add mpv-specific args if using mpv
     if command.contains("mpv") {
         // Create IPC socket path
-        let socket_path = std::env::temp_dir().join(format!("ferristream-mpv-{}.sock", std::process::id()));
+        let socket_path =
+            std::env::temp_dir().join(format!("ferristream-mpv-{}.sock", std::process::id()));
 
         cmd.args([
             "--force-seekable=yes",
@@ -969,7 +984,8 @@ pub async fn launch_player(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let child = cmd.spawn()
+    let child = cmd
+        .spawn()
         .map_err(|e| StreamError::PlayerError(command.to_string(), e.to_string()))?;
 
     Ok(PlayerHandle { child, ipc_socket })
@@ -977,6 +993,7 @@ pub async fn launch_player(
 
 /// Get current playback position from mpv via IPC
 /// Returns (position_seconds, duration_seconds) if successful
+#[cfg(unix)]
 pub async fn get_mpv_position(socket_path: &std::path::Path) -> Option<(f64, f64)> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
@@ -987,12 +1004,18 @@ pub async fn get_mpv_position(socket_path: &std::path::Path) -> Option<(f64, f64
     let mut reader = BufReader::new(reader);
 
     // Request time-pos
-    writer.write_all(b"{\"command\": [\"get_property\", \"time-pos\"]}\n").await.ok()?;
+    writer
+        .write_all(b"{\"command\": [\"get_property\", \"time-pos\"]}\n")
+        .await
+        .ok()?;
     let mut pos_response = String::new();
     reader.read_line(&mut pos_response).await.ok()?;
 
     // Request duration
-    writer.write_all(b"{\"command\": [\"get_property\", \"duration\"]}\n").await.ok()?;
+    writer
+        .write_all(b"{\"command\": [\"get_property\", \"duration\"]}\n")
+        .await
+        .ok()?;
     let mut dur_response = String::new();
     reader.read_line(&mut dur_response).await.ok()?;
 
@@ -1008,6 +1031,12 @@ pub async fn get_mpv_position(socket_path: &std::path::Path) -> Option<(f64, f64
         .as_f64()?;
 
     Some((pos, dur))
+}
+
+// Add a Windows stub that returns None
+#[cfg(not(unix))]
+pub async fn get_mpv_position(_socket_path: &std::path::Path) -> Option<(f64, f64)> {
+    None
 }
 
 /// Calculate playback progress as percentage

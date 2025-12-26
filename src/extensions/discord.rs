@@ -1,5 +1,5 @@
 use super::{Extension, PlaybackEvent};
-use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
+use discord_rich_presence::{DiscordIpc, DiscordIpcClient, activity};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 

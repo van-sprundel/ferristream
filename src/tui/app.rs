@@ -235,9 +235,9 @@ pub struct App {
     pub pending_torrent_id: Option<usize>,
 
     // Episode tracking (for season packs / multi-episode)
-    pub current_episode_index: usize,  // Index in available_files of currently playing
-    pub next_episode_ready: bool,       // True when next episode is pre-loaded
-    pub auto_play_next: bool,           // Whether to auto-advance to next episode
+    pub current_episode_index: usize, // Index in available_files of currently playing
+    pub next_episode_ready: bool,     // True when next episode is pre-loaded
+    pub auto_play_next: bool,         // Whether to auto-advance to next episode
 
     // Streaming
     pub streaming_state: StreamingState,
@@ -271,16 +271,16 @@ pub struct App {
 
     // Wizard
     pub wizard_step: WizardStep,
-    pub wizard_field_index: usize,  // Which field in current step
+    pub wizard_field_index: usize, // Which field in current step
     pub wizard_editing: bool,
     pub wizard_edit_buffer: String,
 
     // Resume prompt
     pub show_resume_prompt: bool,
-    pub resume_progress: f64,  // Progress percentage to resume from
+    pub resume_progress: f64, // Progress percentage to resume from
 
     // Playback tracking (from mpv IPC)
-    pub playback_progress: f64,  // Actual playback progress from player
+    pub playback_progress: f64, // Actual playback progress from player
 
     // Racing status
     pub racing_message: Option<String>,
@@ -476,7 +476,8 @@ impl App {
     // TV Season navigation
     pub fn select_next_season(&mut self) {
         if !self.tv_seasons.is_empty() {
-            self.selected_season_index = (self.selected_season_index + 1).min(self.tv_seasons.len() - 1);
+            self.selected_season_index =
+                (self.selected_season_index + 1).min(self.tv_seasons.len() - 1);
         }
     }
 
@@ -493,7 +494,8 @@ impl App {
     // TV Episode navigation
     pub fn select_next_episode(&mut self) {
         if !self.tv_episodes.is_empty() {
-            self.selected_episode_index = (self.selected_episode_index + 1).min(self.tv_episodes.len() - 1);
+            self.selected_episode_index =
+                (self.selected_episode_index + 1).min(self.tv_episodes.len() - 1);
         }
     }
 

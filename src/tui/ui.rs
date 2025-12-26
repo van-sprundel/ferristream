@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
-    Frame,
 };
 
 use crate::doctor::CheckStatus;
@@ -39,10 +39,10 @@ fn draw_wizard(frame: &mut Frame, app: &App, config: &Config) {
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Length(3),  // Progress
-            Constraint::Min(0),     // Content
-            Constraint::Length(2),  // Help
+            Constraint::Length(3), // Title
+            Constraint::Length(3), // Progress
+            Constraint::Min(0),    // Content
+            Constraint::Length(2), // Help
         ])
         .split(frame.area());
 
@@ -160,17 +160,16 @@ fn draw_wizard(frame: &mut Frame, app: &App, config: &Config) {
         ],
     };
 
-    let content = Paragraph::new(content_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(match app.wizard_step {
+    let content =
+        Paragraph::new(content_lines).block(Block::default().borders(Borders::ALL).title(
+            match app.wizard_step {
                 WizardStep::Welcome => "Setup Wizard",
                 WizardStep::Prowlarr => "Prowlarr",
                 WizardStep::Tmdb => "TMDB",
                 WizardStep::Player => "Player",
                 WizardStep::Done => "Complete",
-            }),
-    );
+            },
+        ));
     frame.render_widget(content, chunks[2]);
 
     // Help
@@ -547,7 +546,7 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
         (
             "Playback Progress",
             app.playback_progress,
-            format!("{:.1}% watched", app.playback_progress)
+            format!("{:.1}% watched", app.playback_progress),
         )
     } else {
         (
@@ -558,16 +557,12 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
                 download.progress_percent,
                 format_bytes(download.downloaded_bytes),
                 format_bytes(download.total_bytes)
-            )
+            ),
         )
     };
 
     let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(gauge_title),
-        )
+        .block(Block::default().borders(Borders::ALL).title(gauge_title))
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
         .percent((gauge_percent.min(100.0)) as u16)
         .label(gauge_label);
@@ -846,18 +841,14 @@ fn draw_tv_episodes(frame: &mut Frame, app: &App) {
                     Style::default()
                 };
 
-                let runtime = ep
-                    .runtime
-                    .map(|r| format!(" ({}m)", r))
-                    .unwrap_or_default();
+                let runtime = ep.runtime.map(|r| format!(" ({}m)", r)).unwrap_or_default();
 
                 let text = format!("{}{}", ep.display_title(), runtime);
                 ListItem::new(text).style(style)
             })
             .collect();
 
-        let list =
-            List::new(items).block(Block::default().borders(Borders::ALL).title("Episodes"));
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Episodes"));
         frame.render_widget(list, chunks[1]);
     }
 
@@ -1059,11 +1050,8 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
         app.settings_section.label().to_string()
     };
 
-    let content_widget = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title),
-    );
+    let content_widget =
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(content_widget, content_chunks[0]);
 
     // Help text

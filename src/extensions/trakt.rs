@@ -1,8 +1,8 @@
 use super::{Extension, MediaInfo, PlaybackEvent};
 use reqwest::Client;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const TRAKT_API_URL: &str = "https://api.trakt.tv";
 

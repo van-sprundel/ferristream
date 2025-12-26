@@ -12,26 +12,29 @@ use std::time::Duration;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::doctor::{self, CheckResult};
-use crate::extensions::{parse_episode_info, ExtensionManager, MediaInfo, PlaybackEvent};
+use crate::extensions::{ExtensionManager, MediaInfo, PlaybackEvent, parse_episode_info};
 use crate::history::WatchHistory;
 use crate::opensubtitles::OpenSubtitlesClient;
 use crate::prowlarr::ProwlarrClient;
-use crate::streaming::{self, sort_episodes, StreamingSession, TorrentValidation, VideoFile};
-use crate::tmdb::{parse_torrent_title, TmdbClient};
+use crate::streaming::{self, StreamingSession, TorrentValidation, VideoFile, sort_episodes};
+use crate::tmdb::{TmdbClient, parse_torrent_title};
 use crate::torznab::{TorrentResult, TorznabClient};
 
 /// Messages sent from background tasks to the UI
 pub enum UiMessage {
-    SearchComplete { results: Vec<TorrentResult>, search_id: u64 },
+    SearchComplete {
+        results: Vec<TorrentResult>,
+        search_id: u64,
+    },
     SearchError(String),
     TmdbInfo(TmdbMetadata),
     Suggestions(Vec<TmdbSuggestion>),
@@ -66,7 +69,11 @@ fn restore_terminal() {
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
-pub async fn run(config: Config, ext_manager: ExtensionManager, open_settings: bool) -> io::Result<()> {
+pub async fn run(
+    config: Config,
+    ext_manager: ExtensionManager,
+    open_settings: bool,
+) -> io::Result<()> {
     // Set up panic hook to restore terminal
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -93,7 +100,15 @@ pub async fn run(config: Config, ext_manager: ExtensionManager, open_settings: b
 
     // Main loop - config is mutable for settings editing
     let mut config = config;
-    let result = run_app(&mut terminal, &mut app, &mut config, &ext_manager, tx, &mut rx).await;
+    let result = run_app(
+        &mut terminal,
+        &mut app,
+        &mut config,
+        &ext_manager,
+        tx,
+        &mut rx,
+    )
+    .await;
 
     // Shutdown extensions
     ext_manager.shutdown();
@@ -146,7 +161,11 @@ async fn run_app(
                 UiMessage::SearchComplete { results, search_id } => {
                     // Ignore results from stale searches
                     if search_id != app.search_id {
-                        debug!(search_id, current = app.search_id, "ignoring stale search results");
+                        debug!(
+                            search_id,
+                            current = app.search_id,
+                            "ignoring stale search results"
+                        );
                         continue;
                     }
 
@@ -172,7 +191,9 @@ async fn run_app(
                             }
 
                             // Get ALL torrent URLs - we'll race through them until we find a match
-                            let urls: Vec<String> = app.results.iter()
+                            let urls: Vec<String> = app
+                                .results
+                                .iter()
                                 .filter_map(|r| r.get_torrent_url())
                                 .collect();
 
@@ -185,7 +206,10 @@ async fn run_app(
                                 pending_torrent_info = None;
 
                                 app.is_streaming = true;
-                                app.racing_message = Some(format!("Racing {} torrents...", urls.len().min(auto_race)));
+                                app.racing_message = Some(format!(
+                                    "Racing {} torrents...",
+                                    urls.len().min(auto_race)
+                                ));
                                 app.view = View::Streaming;
                                 app.streaming_state = StreamingState::Connecting;
 
@@ -195,12 +219,14 @@ async fn run_app(
                                 streaming_cancel = Some(cancel_token.clone());
 
                                 // Build validation criteria from search query and TMDB info
-                                let mut title_keywords = TorrentValidation::extract_keywords(&app.search_input);
+                                let mut title_keywords =
+                                    TorrentValidation::extract_keywords(&app.search_input);
                                 let mut year: Option<u16> = None;
 
                                 // Add TMDB title keywords and year if available
                                 if let Some(ref tmdb) = app.tmdb_info {
-                                    title_keywords.extend(TorrentValidation::extract_keywords(&tmdb.title));
+                                    title_keywords
+                                        .extend(TorrentValidation::extract_keywords(&tmdb.title));
                                     year = tmdb.year;
                                 }
                                 // Deduplicate keywords
@@ -216,15 +242,19 @@ async fn run_app(
 
                                 let concurrent = auto_race;
                                 tokio::spawn(async move {
-                                    let _ = tx.send(UiMessage::RacingStatus {
-                                        count: concurrent.min(urls.len()),
-                                        message: "connecting...".to_string(),
-                                    }).await;
+                                    let _ = tx
+                                        .send(UiMessage::RacingStatus {
+                                            count: concurrent.min(urls.len()),
+                                            message: "connecting...".to_string(),
+                                        })
+                                        .await;
 
                                     let session = match StreamingSession::new(temp_dir).await {
                                         Ok(s) => std::sync::Arc::new(s),
                                         Err(e) => {
-                                            let _ = tx.send(UiMessage::StreamError(e.to_string())).await;
+                                            let _ = tx
+                                                .send(UiMessage::StreamError(e.to_string()))
+                                                .await;
                                             return;
                                         }
                                     };
@@ -234,17 +264,29 @@ async fn run_app(
                                         return;
                                     }
 
-                                    match session.race_torrents(urls, validation, concurrent, cancel_token.clone()).await {
+                                    match session
+                                        .race_torrents(
+                                            urls,
+                                            validation,
+                                            concurrent,
+                                            cancel_token.clone(),
+                                        )
+                                        .await
+                                    {
                                         Ok((_winner_idx, torrent_info)) => {
-                                            let _ = tx.send(UiMessage::TorrentMetadata {
-                                                torrent_info,
-                                                session,
-                                            }).await;
+                                            let _ = tx
+                                                .send(UiMessage::TorrentMetadata {
+                                                    torrent_info,
+                                                    session,
+                                                })
+                                                .await;
                                         }
                                         Err(e) => {
                                             // Don't report error if cancelled
                                             if !cancel_token.is_cancelled() {
-                                                let _ = tx.send(UiMessage::StreamError(e.to_string())).await;
+                                                let _ = tx
+                                                    .send(UiMessage::StreamError(e.to_string()))
+                                                    .await;
                                             }
                                             session.cleanup().await;
                                         }
@@ -444,16 +486,23 @@ async fn run_app(
                             {
                                 Ok(mut handle) => {
                                     // Spawn position polling task if we have IPC
-                                    let position_handle = if let Some(ref socket_path) = handle.ipc_socket {
+                                    let position_handle = if let Some(ref socket_path) =
+                                        handle.ipc_socket
+                                    {
                                         let socket = socket_path.clone();
                                         let tx_pos = tx.clone();
                                         Some(tokio::spawn(async move {
                                             // Wait a bit for mpv to start
                                             tokio::time::sleep(Duration::from_secs(2)).await;
                                             loop {
-                                                if let Some((pos, dur)) = streaming::get_mpv_position(&socket).await {
-                                                    let progress = streaming::calculate_progress(pos, dur);
-                                                    let _ = tx_pos.send(UiMessage::PlaybackProgress(progress)).await;
+                                                if let Some((pos, dur)) =
+                                                    streaming::get_mpv_position(&socket).await
+                                                {
+                                                    let progress =
+                                                        streaming::calculate_progress(pos, dur);
+                                                    let _ = tx_pos
+                                                        .send(UiMessage::PlaybackProgress(progress))
+                                                        .await;
                                                 }
                                                 tokio::time::sleep(Duration::from_secs(5)).await;
                                             }
@@ -503,7 +552,7 @@ async fn run_app(
                 } => {
                     app.current_file = file_name.clone();
                     app.streaming_state = StreamingState::Ready { stream_url };
-                    app.playback_progress = 0.0;  // Reset for new playback
+                    app.playback_progress = 0.0; // Reset for new playback
 
                     // Check if there's a resume point for this content
                     let history_key = WatchHistory::make_key(app.current_tmdb_id, &file_name);
@@ -561,13 +610,15 @@ async fn run_app(
                     });
 
                     // Save watch progress to history
-                    let history_key = WatchHistory::make_key(app.current_tmdb_id, &app.current_file);
+                    let history_key =
+                        WatchHistory::make_key(app.current_tmdb_id, &app.current_file);
                     watch_history.update(history_key, app.current_title.clone(), watched_percent);
                     watch_history.save();
 
                     // Check if we should auto-play next episode
                     let has_next = app.has_next_episode();
-                    let should_auto_play = app.auto_play_next && has_next && app.available_files.len() > 1;
+                    let should_auto_play =
+                        app.auto_play_next && has_next && app.available_files.len() > 1;
 
                     if should_auto_play {
                         // Advance to next episode
@@ -603,21 +654,23 @@ async fn run_app(
                                 let torrent_id = torrent_info.id;
                                 info!(next_file = %after_next.name, "pre-downloading next episode");
                                 tokio::spawn(async move {
-                                    let _ = session_clone.prioritize_file(torrent_id, after_next_idx).await;
+                                    let _ = session_clone
+                                        .prioritize_file(torrent_id, after_next_idx)
+                                        .await;
                                 });
                             }
 
                             // Launch player for next episode
-                            if let (Some(session), Some(torrent_info)) = (
-                                streaming_session.clone(),
-                                pending_torrent_info.as_ref(),
-                            ) {
+                            if let (Some(session), Some(torrent_info)) =
+                                (streaming_session.clone(), pending_torrent_info.as_ref())
+                            {
                                 let tx = tx.clone();
                                 let player_command = config.player.command.clone();
                                 let player_args = config.player.args.clone();
                                 let subtitles_enabled = config.subtitles.enabled;
                                 let preferred_language = config.subtitles.language.clone();
-                                let opensubtitles_key = config.subtitles.opensubtitles_api_key.clone();
+                                let opensubtitles_key =
+                                    config.subtitles.opensubtitles_api_key.clone();
                                 let tmdb_id = app.current_tmdb_id;
                                 let subtitle_files = torrent_info.subtitle_files.clone();
                                 let stream_url = next_file.stream_url.clone();
@@ -631,7 +684,9 @@ async fn run_app(
                                     let progress_handle = tokio::spawn(async move {
                                         loop {
                                             tokio::time::sleep(Duration::from_millis(500)).await;
-                                            if let Some(stats) = progress_session.get_stats(torrent_id).await {
+                                            if let Some(stats) =
+                                                progress_session.get_stats(torrent_id).await
+                                            {
                                                 let progress = DownloadProgress {
                                                     downloaded_bytes: stats.downloaded_bytes,
                                                     total_bytes: stats.total_bytes,
@@ -639,12 +694,18 @@ async fn run_app(
                                                     upload_speed: stats.upload_speed,
                                                     peers_connected: stats.peers_connected,
                                                     progress_percent: if stats.total_bytes > 0 {
-                                                        (stats.downloaded_bytes as f64 / stats.total_bytes as f64) * 100.0
+                                                        (stats.downloaded_bytes as f64
+                                                            / stats.total_bytes as f64)
+                                                            * 100.0
                                                     } else {
                                                         0.0
                                                     },
                                                 };
-                                                if progress_tx.send(UiMessage::ProgressUpdate(progress)).await.is_err() {
+                                                if progress_tx
+                                                    .send(UiMessage::ProgressUpdate(progress))
+                                                    .await
+                                                    .is_err()
+                                                {
                                                     break;
                                                 }
                                             }
@@ -655,7 +716,9 @@ async fn run_app(
                                     let subtitle_url = if subtitles_enabled {
                                         subtitle_files
                                             .iter()
-                                            .find(|s| s.language.as_deref() == Some(&preferred_language))
+                                            .find(|s| {
+                                                s.language.as_deref() == Some(&preferred_language)
+                                            })
                                             .or_else(|| subtitle_files.first())
                                             .map(|s| s.stream_url.clone())
                                     } else {
@@ -668,20 +731,36 @@ async fn run_app(
                                         &player_args,
                                         &stream_url,
                                         subtitle_url.as_deref(),
-                                    ).await {
+                                    )
+                                    .await
+                                    {
                                         Ok(mut handle) => {
                                             // Spawn position polling task if we have IPC
-                                            let position_handle = if let Some(ref socket_path) = handle.ipc_socket {
+                                            let position_handle = if let Some(ref socket_path) =
+                                                handle.ipc_socket
+                                            {
                                                 let socket = socket_path.clone();
                                                 let tx_pos = tx.clone();
                                                 Some(tokio::spawn(async move {
-                                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                                    tokio::time::sleep(Duration::from_secs(2))
+                                                        .await;
                                                     loop {
-                                                        if let Some((pos, dur)) = streaming::get_mpv_position(&socket).await {
-                                                            let progress = streaming::calculate_progress(pos, dur);
-                                                            let _ = tx_pos.send(UiMessage::PlaybackProgress(progress)).await;
+                                                        if let Some((pos, dur)) =
+                                                            streaming::get_mpv_position(&socket)
+                                                                .await
+                                                        {
+                                                            let progress =
+                                                                streaming::calculate_progress(
+                                                                    pos, dur,
+                                                                );
+                                                            let _ = tx_pos
+                                                                .send(UiMessage::PlaybackProgress(
+                                                                    progress,
+                                                                ))
+                                                                .await;
                                                         }
-                                                        tokio::time::sleep(Duration::from_secs(5)).await;
+                                                        tokio::time::sleep(Duration::from_secs(5))
+                                                            .await;
                                                     }
                                                 }))
                                             } else {
@@ -861,7 +940,8 @@ async fn run_app(
                                 tokio::spawn(async move {
                                     if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
                                         if let Ok(details) = client.get_tv_details(tv_id).await {
-                                            let _ = tx.send(UiMessage::TvDetailsLoaded(details)).await;
+                                            let _ =
+                                                tx.send(UiMessage::TvDetailsLoaded(details)).await;
                                         }
                                     }
                                 });
@@ -874,112 +954,125 @@ async fn run_app(
                                 app.tmdb_info = None;
                                 let query = app.search_input.clone();
                                 let current_search_id = app.search_id;
-                            let tx = tx.clone();
-                            let prowlarr_url = config.prowlarr.url.clone();
-                            let prowlarr_apikey = config.prowlarr.apikey.clone();
-                            let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+                                let tx = tx.clone();
+                                let prowlarr_url = config.prowlarr.url.clone();
+                                let prowlarr_apikey = config.prowlarr.apikey.clone();
+                                let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
 
-                            // Spawn TMDB lookup task in parallel
-                            let tmdb_tx = tx.clone();
-                            let tmdb_query = query.clone();
-                            tokio::spawn(async move {
-                                if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
-                                    debug!(query = %tmdb_query, "looking up TMDB info");
-                                    if let Ok(results) = client.search_multi(&tmdb_query).await {
-                                        if let Some(first) = results.first() {
-                                            let info = TmdbMetadata {
-                                                id: Some(first.id),
-                                                title: first.display_title().to_string(),
-                                                year: first.year(),
-                                                overview: first.overview.clone(),
-                                                rating: first.vote_average,
-                                                media_type: first.media_type.clone(),
-                                                poster_url: first.poster_url("w500"),
-                                            };
-                                            let _ = tmdb_tx.send(UiMessage::TmdbInfo(info)).await;
-                                        }
-                                    }
-                                }
-                            });
-
-                            // Spawn torrent search task
-                            tokio::spawn(async move {
-                                let prowlarr_config = crate::config::ProwlarrConfig {
-                                    url: prowlarr_url,
-                                    apikey: prowlarr_apikey,
-                                };
-                                let prowlarr = ProwlarrClient::new(&prowlarr_config);
-                                let torznab = TorznabClient::new();
-
-                                info!("fetching indexers from prowlarr");
-                                let mut all_results = Vec::new();
-
-                                let mut last_error: Option<String> = None;
-
-                                match prowlarr.get_usable_indexers().await {
-                                    Ok(indexers) => {
-                                        info!(count = indexers.len(), "got indexers");
-                                        for indexer in &indexers {
-                                            info!(indexer = %indexer.name, "searching indexer");
-                                            match torznab
-                                                .search(
-                                                    &prowlarr_config.url,
-                                                    &prowlarr_config.apikey,
-                                                    indexer.id,
-                                                    &indexer.name,
-                                                    &query,
-                                                    Some(VIDEO_CATEGORIES),
-                                                )
-                                                .await
-                                            {
-                                                Ok(results) => {
-                                                    info!(
-                                                        count = results.len(),
-                                                        "got results from indexer"
-                                                    );
-                                                    all_results.extend(results);
-                                                }
-                                                Err(e) => {
-                                                    error!(error = %e, indexer = %indexer.name, "search failed");
-                                                    last_error =
-                                                        Some(format!("{}: {}", indexer.name, e));
-                                                }
+                                // Spawn TMDB lookup task in parallel
+                                let tmdb_tx = tx.clone();
+                                let tmdb_query = query.clone();
+                                tokio::spawn(async move {
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
+                                        debug!(query = %tmdb_query, "looking up TMDB info");
+                                        if let Ok(results) = client.search_multi(&tmdb_query).await
+                                        {
+                                            if let Some(first) = results.first() {
+                                                let info = TmdbMetadata {
+                                                    id: Some(first.id),
+                                                    title: first.display_title().to_string(),
+                                                    year: first.year(),
+                                                    overview: first.overview.clone(),
+                                                    rating: first.vote_average,
+                                                    media_type: first.media_type.clone(),
+                                                    poster_url: first.poster_url("w500"),
+                                                };
+                                                let _ =
+                                                    tmdb_tx.send(UiMessage::TmdbInfo(info)).await;
                                             }
                                         }
                                     }
-                                    Err(e) => {
-                                        error!(error = %e, "failed to get indexers");
-                                        let _ = tx
-                                            .send(UiMessage::SearchError(format!(
-                                                "Prowlarr error: {}",
-                                                e
-                                            )))
-                                            .await;
-                                        return;
-                                    }
-                                }
-
-                                // Filter and sort
-                                let mut streamable: Vec<TorrentResult> = all_results
-                                    .into_iter()
-                                    .filter(|r| r.is_streamable())
-                                    .collect();
-                                streamable.sort_by(|a, b| {
-                                    b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0))
                                 });
 
-                                info!(count = streamable.len(), "search complete");
-                                if streamable.is_empty() {
-                                    if let Some(err) = last_error {
-                                        let _ = tx.send(UiMessage::SearchError(err)).await;
-                                    } else {
-                                        let _ =
-                                            tx.send(UiMessage::SearchComplete { results: streamable, search_id: current_search_id }).await;
+                                // Spawn torrent search task
+                                tokio::spawn(async move {
+                                    let prowlarr_config = crate::config::ProwlarrConfig {
+                                        url: prowlarr_url,
+                                        apikey: prowlarr_apikey,
+                                    };
+                                    let prowlarr = ProwlarrClient::new(&prowlarr_config);
+                                    let torznab = TorznabClient::new();
+
+                                    info!("fetching indexers from prowlarr");
+                                    let mut all_results = Vec::new();
+
+                                    let mut last_error: Option<String> = None;
+
+                                    match prowlarr.get_usable_indexers().await {
+                                        Ok(indexers) => {
+                                            info!(count = indexers.len(), "got indexers");
+                                            for indexer in &indexers {
+                                                info!(indexer = %indexer.name, "searching indexer");
+                                                match torznab
+                                                    .search(
+                                                        &prowlarr_config.url,
+                                                        &prowlarr_config.apikey,
+                                                        indexer.id,
+                                                        &indexer.name,
+                                                        &query,
+                                                        Some(VIDEO_CATEGORIES),
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(results) => {
+                                                        info!(
+                                                            count = results.len(),
+                                                            "got results from indexer"
+                                                        );
+                                                        all_results.extend(results);
+                                                    }
+                                                    Err(e) => {
+                                                        error!(error = %e, indexer = %indexer.name, "search failed");
+                                                        last_error = Some(format!(
+                                                            "{}: {}",
+                                                            indexer.name, e
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(error = %e, "failed to get indexers");
+                                            let _ = tx
+                                                .send(UiMessage::SearchError(format!(
+                                                    "Prowlarr error: {}",
+                                                    e
+                                                )))
+                                                .await;
+                                            return;
+                                        }
                                     }
-                                } else {
-                                    let _ = tx.send(UiMessage::SearchComplete { results: streamable, search_id: current_search_id }).await;
-                                }
-                            });
+
+                                    // Filter and sort
+                                    let mut streamable: Vec<TorrentResult> = all_results
+                                        .into_iter()
+                                        .filter(|r| r.is_streamable())
+                                        .collect();
+                                    streamable.sort_by(|a, b| {
+                                        b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0))
+                                    });
+
+                                    info!(count = streamable.len(), "search complete");
+                                    if streamable.is_empty() {
+                                        if let Some(err) = last_error {
+                                            let _ = tx.send(UiMessage::SearchError(err)).await;
+                                        } else {
+                                            let _ = tx
+                                                .send(UiMessage::SearchComplete {
+                                                    results: streamable,
+                                                    search_id: current_search_id,
+                                                })
+                                                .await;
+                                        }
+                                    } else {
+                                        let _ = tx
+                                            .send(UiMessage::SearchComplete {
+                                                results: streamable,
+                                                search_id: current_search_id,
+                                            })
+                                            .await;
+                                    }
+                                });
                             }
                         }
                         KeyCode::Char('d') if app.search_input.is_empty() && !app.is_searching => {
@@ -1097,7 +1190,9 @@ async fn run_app(
                         }
                         KeyCode::Enter if !app.is_fetching_tv_details => {
                             // Fetch episodes for selected season
-                            if let (Some(tv_id), Some(season)) = (app.current_tmdb_id, app.selected_season()) {
+                            if let (Some(tv_id), Some(season)) =
+                                (app.current_tmdb_id, app.selected_season())
+                            {
                                 let season_number = season.season_number;
                                 let tx = tx.clone();
                                 let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
@@ -1105,8 +1200,14 @@ async fn run_app(
 
                                 tokio::spawn(async move {
                                     if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
-                                        if let Ok(details) = client.get_season_details(tv_id, season_number).await {
-                                            let _ = tx.send(UiMessage::SeasonEpisodesLoaded(details.episodes)).await;
+                                        if let Ok(details) =
+                                            client.get_season_details(tv_id, season_number).await
+                                        {
+                                            let _ = tx
+                                                .send(UiMessage::SeasonEpisodesLoaded(
+                                                    details.episodes,
+                                                ))
+                                                .await;
                                         }
                                     }
                                 });
@@ -1135,15 +1236,20 @@ async fn run_app(
                         }
                         KeyCode::Enter if !app.is_searching => {
                             // Search for this episode
-                            if let (Some(episode), Some(tv_details)) = (app.selected_tv_episode().cloned(), app.tv_details.clone()) {
+                            if let (Some(episode), Some(tv_details)) =
+                                (app.selected_tv_episode().cloned(), app.tv_details.clone())
+                            {
                                 let query = episode.search_query(&tv_details.name);
                                 info!(query = %query, "searching for episode");
 
                                 app.search_id += 1; // Increment to invalidate any in-flight searches
                                 app.is_searching = true;
                                 app.search_error = None;
-                                app.current_title = format!("{} - {}", tv_details.name, episode.display_title());
-                                app.current_year = tv_details.first_air_date.as_ref()
+                                app.current_title =
+                                    format!("{} - {}", tv_details.name, episode.display_title());
+                                app.current_year = tv_details
+                                    .first_air_date
+                                    .as_ref()
                                     .and_then(|d| d.split('-').next()?.parse().ok());
                                 app.current_media_type = Some("tv".to_string());
 
@@ -1186,10 +1292,17 @@ async fn run_app(
                                             streamable.sort_by(|a, b| {
                                                 b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0))
                                             });
-                                            let _ = tx.send(UiMessage::SearchComplete { results: streamable, search_id: current_search_id }).await;
+                                            let _ = tx
+                                                .send(UiMessage::SearchComplete {
+                                                    results: streamable,
+                                                    search_id: current_search_id,
+                                                })
+                                                .await;
                                         }
                                         Err(e) => {
-                                            let _ = tx.send(UiMessage::SearchError(e.to_string())).await;
+                                            let _ = tx
+                                                .send(UiMessage::SearchError(e.to_string()))
+                                                .await;
                                         }
                                     }
                                 });
@@ -1475,17 +1588,31 @@ async fn run_app(
                                     {
                                         Ok(mut handle) => {
                                             // Spawn position polling task if we have IPC
-                                            let position_handle = if let Some(ref socket_path) = handle.ipc_socket {
+                                            let position_handle = if let Some(ref socket_path) =
+                                                handle.ipc_socket
+                                            {
                                                 let socket = socket_path.clone();
                                                 let tx_pos = tx.clone();
                                                 Some(tokio::spawn(async move {
-                                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                                    tokio::time::sleep(Duration::from_secs(2))
+                                                        .await;
                                                     loop {
-                                                        if let Some((pos, dur)) = streaming::get_mpv_position(&socket).await {
-                                                            let progress = streaming::calculate_progress(pos, dur);
-                                                            let _ = tx_pos.send(UiMessage::PlaybackProgress(progress)).await;
+                                                        if let Some((pos, dur)) =
+                                                            streaming::get_mpv_position(&socket)
+                                                                .await
+                                                        {
+                                                            let progress =
+                                                                streaming::calculate_progress(
+                                                                    pos, dur,
+                                                                );
+                                                            let _ = tx_pos
+                                                                .send(UiMessage::PlaybackProgress(
+                                                                    progress,
+                                                                ))
+                                                                .await;
                                                         }
-                                                        tokio::time::sleep(Duration::from_secs(5)).await;
+                                                        tokio::time::sleep(Duration::from_secs(5))
+                                                            .await;
                                                     }
                                                 }))
                                             } else {
@@ -1533,7 +1660,10 @@ async fn run_app(
                         KeyCode::Char('r') if app.show_resume_prompt => {
                             // Resume from saved position
                             app.show_resume_prompt = false;
-                            info!(progress = app.resume_progress, "user chose to resume playback");
+                            info!(
+                                progress = app.resume_progress,
+                                "user chose to resume playback"
+                            );
                             // Note: Actual seeking would require mpv IPC - for now we just dismiss
                             // and let the user manually seek. A full implementation would pass
                             // --start=X% to mpv.
@@ -1541,7 +1671,8 @@ async fn run_app(
                         KeyCode::Char('s') if app.show_resume_prompt => {
                             // Start from beginning - clear the saved progress
                             app.show_resume_prompt = false;
-                            let history_key = WatchHistory::make_key(app.current_tmdb_id, &app.current_file);
+                            let history_key =
+                                WatchHistory::make_key(app.current_tmdb_id, &app.current_file);
                             watch_history.clear(&history_key);
                             watch_history.save();
                             info!("user chose to start from beginning");
@@ -1705,7 +1836,11 @@ fn get_settings_field_value(app: &App, config: &Config) -> String {
             _ => String::new(),
         },
         SettingsSection::Tmdb => match app.settings_field_index {
-            0 => config.tmdb.as_ref().map(|t| t.apikey.clone()).unwrap_or_default(),
+            0 => config
+                .tmdb
+                .as_ref()
+                .map(|t| t.apikey.clone())
+                .unwrap_or_default(),
             _ => String::new(),
         },
         SettingsSection::Player => match app.settings_field_index {
@@ -1716,7 +1851,11 @@ fn get_settings_field_value(app: &App, config: &Config) -> String {
         SettingsSection::Subtitles => match app.settings_field_index {
             0 => config.subtitles.enabled.to_string(),
             1 => config.subtitles.language.clone(),
-            2 => config.subtitles.opensubtitles_api_key.clone().unwrap_or_default(),
+            2 => config
+                .subtitles
+                .opensubtitles_api_key
+                .clone()
+                .unwrap_or_default(),
             _ => String::new(),
         },
         SettingsSection::Discord => match app.settings_field_index {
@@ -1726,8 +1865,18 @@ fn get_settings_field_value(app: &App, config: &Config) -> String {
         },
         SettingsSection::Trakt => match app.settings_field_index {
             0 => config.extensions.trakt.enabled.to_string(),
-            1 => config.extensions.trakt.client_id.clone().unwrap_or_default(),
-            2 => config.extensions.trakt.access_token.clone().unwrap_or_default(),
+            1 => config
+                .extensions
+                .trakt
+                .client_id
+                .clone()
+                .unwrap_or_default(),
+            2 => config
+                .extensions
+                .trakt
+                .access_token
+                .clone()
+                .unwrap_or_default(),
             _ => String::new(),
         },
     }
@@ -1743,13 +1892,15 @@ fn apply_settings_edit(app: &App, config: &mut Config) {
             1 => config.prowlarr.apikey = value,
             _ => {}
         },
-        SettingsSection::Tmdb => if app.settings_field_index == 0 {
-            if value.is_empty() {
-                config.tmdb = None;
-            } else {
-                config.tmdb = Some(crate::config::TmdbConfig { apikey: value });
+        SettingsSection::Tmdb => {
+            if app.settings_field_index == 0 {
+                if value.is_empty() {
+                    config.tmdb = None;
+                } else {
+                    config.tmdb = Some(crate::config::TmdbConfig { apikey: value });
+                }
             }
-        },
+        }
         SettingsSection::Player => match app.settings_field_index {
             0 => config.player.command = value,
             1 => {
@@ -1765,40 +1916,28 @@ fn apply_settings_edit(app: &App, config: &mut Config) {
             0 => config.subtitles.enabled = value.to_lowercase() == "true",
             1 => config.subtitles.language = value,
             2 => {
-                config.subtitles.opensubtitles_api_key = if value.is_empty() {
-                    None
-                } else {
-                    Some(value)
-                };
+                config.subtitles.opensubtitles_api_key =
+                    if value.is_empty() { None } else { Some(value) };
             }
             _ => {}
         },
         SettingsSection::Discord => match app.settings_field_index {
             0 => config.extensions.discord.enabled = value.to_lowercase() == "true",
             1 => {
-                config.extensions.discord.app_id = if value.is_empty() {
-                    None
-                } else {
-                    Some(value)
-                };
+                config.extensions.discord.app_id =
+                    if value.is_empty() { None } else { Some(value) };
             }
             _ => {}
         },
         SettingsSection::Trakt => match app.settings_field_index {
             0 => config.extensions.trakt.enabled = value.to_lowercase() == "true",
             1 => {
-                config.extensions.trakt.client_id = if value.is_empty() {
-                    None
-                } else {
-                    Some(value)
-                };
+                config.extensions.trakt.client_id =
+                    if value.is_empty() { None } else { Some(value) };
             }
             2 => {
-                config.extensions.trakt.access_token = if value.is_empty() {
-                    None
-                } else {
-                    Some(value)
-                };
+                config.extensions.trakt.access_token =
+                    if value.is_empty() { None } else { Some(value) };
             }
             _ => {}
         },
@@ -1833,7 +1972,11 @@ fn get_wizard_field_value(app: &App, config: &Config) -> String {
             _ => String::new(),
         },
         WizardStep::Tmdb => match app.wizard_field_index {
-            0 => config.tmdb.as_ref().map(|t| t.apikey.clone()).unwrap_or_default(),
+            0 => config
+                .tmdb
+                .as_ref()
+                .map(|t| t.apikey.clone())
+                .unwrap_or_default(),
             _ => String::new(),
         },
         WizardStep::Player => match app.wizard_field_index {
