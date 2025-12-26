@@ -42,24 +42,24 @@ async fn main() {
             .init();
     }
 
-    let config = match Config::load() {
-        Ok(config) => config,
+    let (config, is_new) = match Config::load() {
+        Ok(config) => (config, false),
+        Err(config::ConfigError::NotFound(_)) => {
+            // Config doesn't exist - create default and open settings
+            match Config::load_or_create() {
+                Ok(config) => {
+                    eprintln!("Created default config. Opening settings to configure...");
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    (config, true)
+                }
+                Err(e) => {
+                    eprintln!("Failed to create config: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Err(e) => {
             eprintln!("Failed to load config: {}", e);
-            if let config::ConfigError::NotFound(path) = &e {
-                eprintln!("\nCreate a config file at: {}", path.display());
-                eprintln!("\nExample config.toml:");
-                eprintln!(
-                    r#"
-[prowlarr]
-url = "http://localhost:9696"
-apikey = "your-api-key"
-
-[player]
-command = "mpv"
-"#
-                );
-            }
             std::process::exit(1);
         }
     };
@@ -80,7 +80,7 @@ command = "mpv"
         )));
     }
 
-    let result = tui::run(config, ext_manager).await;
+    let result = tui::run(config, ext_manager, is_new).await;
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);

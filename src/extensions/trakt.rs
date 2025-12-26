@@ -77,8 +77,30 @@ impl TraktExtension {
             .is_some_and(|t| t == "tv" || t == "show");
 
         if is_tv {
-            // For TV shows, we'd need season/episode info which we don't have yet
-            // Just scrobble as a show for now (Trakt may not accept this)
+            // Build episode info if we have season/episode from filename
+            let episode_info = match (media.season, media.episode) {
+                (Some(s), Some(e)) => {
+                    tracing::debug!(
+                        title = %media.title,
+                        season = s,
+                        episode = e,
+                        "trakt: parsed episode info from filename"
+                    );
+                    Some(ScrobbleEpisode {
+                        season: s,
+                        number: e,
+                    })
+                }
+                _ => {
+                    tracing::debug!(
+                        title = %media.title,
+                        filename = %media.file_name,
+                        "trakt: no episode info found in filename"
+                    );
+                    None
+                }
+            };
+
             Some(ScrobbleRequest {
                 movie: None,
                 show: Some(ScrobbleShow {
@@ -88,7 +110,7 @@ impl TraktExtension {
                         tmdb: Some(tmdb_id),
                     },
                 }),
-                episode: None, // TODO: Parse season/episode from filename
+                episode: episode_info,
                 progress,
             })
         } else {

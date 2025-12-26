@@ -1,5 +1,5 @@
 use directories::ProjectDirs;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -17,7 +17,7 @@ pub enum ConfigError {
     ValidationError(String),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub prowlarr: ProwlarrConfig,
     pub tmdb: Option<TmdbConfig>,
@@ -31,7 +31,7 @@ pub struct Config {
     pub subtitles: SubtitlesConfig,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ExtensionsConfig {
     #[serde(default)]
     pub discord: DiscordConfig,
@@ -39,39 +39,43 @@ pub struct ExtensionsConfig {
     pub trakt: TraktConfig,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct DiscordConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TraktConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProwlarrConfig {
     pub url: String,
     pub apikey: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TmdbConfig {
     pub apikey: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SubtitlesConfig {
     #[serde(default = "default_subtitles_enabled")]
     pub enabled: bool,
     #[serde(default = "default_subtitle_language")]
     pub language: String,
     /// OpenSubtitles API key for fetching subtitles when not included in torrent
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub opensubtitles_api_key: Option<String>,
 }
 
@@ -93,11 +97,11 @@ fn default_subtitle_language() -> String {
     "en".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PlayerConfig {
     #[serde(default = "default_player_command")]
     pub command: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
 }
 
@@ -114,8 +118,9 @@ fn default_player_command() -> String {
     "mpv".to_string()
 }
 
-#[derive(Default, Debug, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temp_dir: Option<PathBuf>,
 }
 
@@ -130,6 +135,17 @@ impl StorageConfig {
 impl Config {
     pub fn load() -> Result<Self, ConfigError> {
         let path = Self::config_path()?;
+        Self::load_from(&path)
+    }
+
+    /// Load config, creating a default one if it doesn't exist
+    pub fn load_or_create() -> Result<Self, ConfigError> {
+        let path = Self::config_path()?;
+        if !path.exists() {
+            let config = Self::default();
+            config.save()?;
+            return Ok(config);
+        }
         Self::load_from(&path)
     }
 
@@ -148,6 +164,18 @@ impl Config {
         ProjectDirs::from("", "", "ferristream")
             .map(|dirs| dirs.config_dir().join("config.toml"))
             .ok_or(ConfigError::NoConfigDir)
+    }
+
+    pub fn save(&self) -> Result<(), ConfigError> {
+        let path = Self::config_path()?;
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let contents = toml::to_string_pretty(self)
+            .map_err(|e| ConfigError::ValidationError(format!("failed to serialize: {}", e)))?;
+        std::fs::write(&path, contents)?;
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -173,5 +201,21 @@ impl Config {
         }
 
         Ok(())
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: String::new(),
+            },
+            tmdb: None,
+            player: PlayerConfig::default(),
+            storage: StorageConfig::default(),
+            extensions: ExtensionsConfig::default(),
+            subtitles: SubtitlesConfig::default(),
+        }
     }
 }

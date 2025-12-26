@@ -482,174 +482,173 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
         ])
         .split(chunks[1]);
 
-    let content = match app.settings_section {
-        SettingsSection::Prowlarr => {
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::styled("URL: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(&config.prowlarr.url),
-                ]),
-                Line::from(vec![
-                    Span::styled("API Key: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(mask_secret(&config.prowlarr.apikey)),
-                ]),
-            ];
-            lines
-        }
-        SettingsSection::Tmdb => {
-            if let Some(ref tmdb) = config.tmdb {
-                vec![Line::from(vec![
-                    Span::styled("API Key: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(mask_secret(&tmdb.apikey)),
-                ])]
-            } else {
-                vec![Line::from(Span::styled(
-                    "Not configured",
-                    Style::default().fg(Color::DarkGray),
-                ))]
-            }
-        }
-        SettingsSection::Player => {
-            vec![
-                Line::from(vec![
-                    Span::styled("Command: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(&config.player.command),
-                ]),
-                Line::from(vec![
-                    Span::styled("Args: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(if config.player.args.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        config.player.args.join(" ")
-                    }),
-                ]),
-            ]
-        }
-        SettingsSection::Subtitles => {
-            vec![
-                Line::from(vec![
-                    Span::styled("Enabled: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled(
-                        if config.subtitles.enabled {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                        Style::default().fg(if config.subtitles.enabled {
-                            Color::Green
-                        } else {
-                            Color::Red
-                        }),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("Language: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(&config.subtitles.language),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        "OpenSubtitles Key: ",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(
-                        config
-                            .subtitles
-                            .opensubtitles_api_key
-                            .as_ref()
-                            .map(|k| mask_secret(k))
-                            .unwrap_or_else(|| "(not set)".to_string()),
-                    ),
-                ]),
-            ]
-        }
-        SettingsSection::Discord => {
-            vec![
-                Line::from(vec![
-                    Span::styled("Enabled: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled(
-                        if config.extensions.discord.enabled {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                        Style::default().fg(if config.extensions.discord.enabled {
-                            Color::Green
-                        } else {
-                            Color::Red
-                        }),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("App ID: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(
-                        config
-                            .extensions
-                            .discord
-                            .app_id
-                            .as_deref()
-                            .unwrap_or("(using default)"),
-                    ),
-                ]),
-            ]
-        }
-        SettingsSection::Trakt => {
-            vec![
-                Line::from(vec![
-                    Span::styled("Enabled: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled(
-                        if config.extensions.trakt.enabled {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                        Style::default().fg(if config.extensions.trakt.enabled {
-                            Color::Green
-                        } else {
-                            Color::Red
-                        }),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("Client ID: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(
-                        config
-                            .extensions
-                            .trakt
-                            .client_id
-                            .as_ref()
-                            .map(|k| mask_secret(k))
-                            .unwrap_or_else(|| "(not set)".to_string()),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        "Access Token: ",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(
-                        config
-                            .extensions
-                            .trakt
-                            .access_token
-                            .as_ref()
-                            .map(|k| mask_secret(k))
-                            .unwrap_or_else(|| "(not set)".to_string()),
-                    ),
-                ]),
-            ]
-        }
+    // Build fields with selection highlighting
+    let fields: Vec<(&str, String, bool)> = match app.settings_section {
+        SettingsSection::Prowlarr => vec![
+            ("URL", config.prowlarr.url.clone(), false),
+            ("API Key", mask_secret(&config.prowlarr.apikey), true),
+        ],
+        SettingsSection::Tmdb => vec![(
+            "API Key",
+            config
+                .tmdb
+                .as_ref()
+                .map(|t| mask_secret(&t.apikey))
+                .unwrap_or_else(|| "(not set)".to_string()),
+            true,
+        )],
+        SettingsSection::Player => vec![
+            ("Command", config.player.command.clone(), false),
+            (
+                "Args",
+                if config.player.args.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    config.player.args.join(" ")
+                },
+                false,
+            ),
+        ],
+        SettingsSection::Subtitles => vec![
+            (
+                "Enabled",
+                if config.subtitles.enabled {
+                    "Yes".to_string()
+                } else {
+                    "No".to_string()
+                },
+                false,
+            ),
+            ("Language", config.subtitles.language.clone(), false),
+            (
+                "OpenSubtitles Key",
+                config
+                    .subtitles
+                    .opensubtitles_api_key
+                    .as_ref()
+                    .map(|k| mask_secret(k))
+                    .unwrap_or_else(|| "(not set)".to_string()),
+                true,
+            ),
+        ],
+        SettingsSection::Discord => vec![
+            (
+                "Enabled",
+                if config.extensions.discord.enabled {
+                    "Yes".to_string()
+                } else {
+                    "No".to_string()
+                },
+                false,
+            ),
+            (
+                "App ID",
+                config
+                    .extensions
+                    .discord
+                    .app_id
+                    .clone()
+                    .unwrap_or_else(|| "(using default)".to_string()),
+                false,
+            ),
+        ],
+        SettingsSection::Trakt => vec![
+            (
+                "Enabled",
+                if config.extensions.trakt.enabled {
+                    "Yes".to_string()
+                } else {
+                    "No".to_string()
+                },
+                false,
+            ),
+            (
+                "Client ID",
+                config
+                    .extensions
+                    .trakt
+                    .client_id
+                    .as_ref()
+                    .map(|k| mask_secret(k))
+                    .unwrap_or_else(|| "(not set)".to_string()),
+                true,
+            ),
+            (
+                "Access Token",
+                config
+                    .extensions
+                    .trakt
+                    .access_token
+                    .as_ref()
+                    .map(|k| mask_secret(k))
+                    .unwrap_or_else(|| "(not set)".to_string()),
+                true,
+            ),
+        ],
     };
 
-    let content_widget = Paragraph::new(content).block(
+    // Build lines with selection highlighting
+    let lines: Vec<Line> = fields
+        .iter()
+        .enumerate()
+        .map(|(idx, (label, value, _is_secret))| {
+            let is_selected = idx == app.settings_field_index;
+            let is_bool = *label == "Enabled";
+
+            // In edit mode, show the edit buffer for the selected field
+            let display_value = if is_selected && app.settings_editing {
+                format!("{}▌", app.settings_edit_buffer)
+            } else {
+                value.clone()
+            };
+
+            let label_style = Style::default().add_modifier(Modifier::BOLD);
+            let value_style = if is_selected {
+                if app.settings_editing {
+                    Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                }
+            } else if is_bool {
+                if value == "Yes" {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Red)
+                }
+            } else {
+                Style::default()
+            };
+
+            let prefix = if is_selected { "▸ " } else { "  " };
+
+            Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(format!("{}: ", label), label_style),
+                Span::styled(display_value, value_style),
+            ])
+        })
+        .collect();
+
+    let title = if app.settings_dirty {
+        format!("{} [modified]", app.settings_section.label())
+    } else {
+        app.settings_section.label().to_string()
+    };
+
+    let content_widget = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(app.settings_section.label()),
+            .title(title),
     );
     frame.render_widget(content_widget, content_chunks[0]);
 
-    // Help
-    let help = Paragraph::new("↑/↓: navigate sections | Esc: back to search")
-        .style(Style::default().fg(Color::DarkGray));
+    // Help text
+    let help_text = if app.settings_editing {
+        "Enter: save | Esc: cancel"
+    } else {
+        "←/→: sections | ↑/↓: fields | Enter: edit | Space: toggle | s: save | q: back"
+    };
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, content_chunks[1]);
 }
 
