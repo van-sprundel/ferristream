@@ -769,16 +769,27 @@ pub fn is_subtitle_file(filename: &str) -> bool {
     SUBTITLE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
+/// Result of launching a player with IPC support
+pub struct PlayerHandle {
+    pub child: tokio::process::Child,
+    /// Path to mpv IPC socket (only for mpv)
+    pub ipc_socket: Option<PathBuf>,
+}
+
 pub async fn launch_player(
     command: &str,
     args: &[String],
     stream_url: &str,
     subtitle_url: Option<&str>,
-) -> Result<tokio::process::Child, StreamError> {
+) -> Result<PlayerHandle, StreamError> {
     let mut cmd = Command::new(command);
+    let mut ipc_socket = None;
 
     // Only add mpv-specific args if using mpv
     if command.contains("mpv") {
+        // Create IPC socket path
+        let socket_path = std::env::temp_dir().join(format!("ferristream-mpv-{}.sock", std::process::id()));
+
         cmd.args([
             "--force-seekable=yes",
             "--cache=yes",
@@ -786,6 +797,10 @@ pub async fn launch_player(
             "--hwdec=auto",
             "--really-quiet", // Suppress all terminal output
         ]);
+
+        // Enable IPC for position tracking
+        cmd.arg(format!("--input-ipc-server={}", socket_path.display()));
+        ipc_socket = Some(socket_path);
 
         // Add subtitle file if provided
         if let Some(sub_url) = subtitle_url {
@@ -808,8 +823,54 @@ pub async fn launch_player(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    cmd.spawn()
-        .map_err(|e| StreamError::PlayerError(command.to_string(), e.to_string()))
+    let child = cmd.spawn()
+        .map_err(|e| StreamError::PlayerError(command.to_string(), e.to_string()))?;
+
+    Ok(PlayerHandle { child, ipc_socket })
+}
+
+/// Get current playback position from mpv via IPC
+/// Returns (position_seconds, duration_seconds) if successful
+pub async fn get_mpv_position(socket_path: &std::path::Path) -> Option<(f64, f64)> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    // Connect to mpv socket
+    let stream = UnixStream::connect(socket_path).await.ok()?;
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    // Request time-pos
+    writer.write_all(b"{\"command\": [\"get_property\", \"time-pos\"]}\n").await.ok()?;
+    let mut pos_response = String::new();
+    reader.read_line(&mut pos_response).await.ok()?;
+
+    // Request duration
+    writer.write_all(b"{\"command\": [\"get_property\", \"duration\"]}\n").await.ok()?;
+    let mut dur_response = String::new();
+    reader.read_line(&mut dur_response).await.ok()?;
+
+    // Parse responses
+    let pos: f64 = serde_json::from_str::<serde_json::Value>(&pos_response)
+        .ok()?
+        .get("data")?
+        .as_f64()?;
+
+    let dur: f64 = serde_json::from_str::<serde_json::Value>(&dur_response)
+        .ok()?
+        .get("data")?
+        .as_f64()?;
+
+    Some((pos, dur))
+}
+
+/// Calculate playback progress as percentage
+pub fn calculate_progress(position: f64, duration: f64) -> f64 {
+    if duration > 0.0 {
+        (position / duration * 100.0).min(100.0)
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]

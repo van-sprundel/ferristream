@@ -3,7 +3,7 @@ mod ui;
 
 pub use app::{
     App, DownloadProgress, SettingsSection, SortOrder, StreamingState, TmdbMetadata,
-    TmdbSuggestion, View,
+    TmdbSuggestion, View, WizardStep,
 };
 
 use std::io;
@@ -22,6 +22,7 @@ use tracing::{debug, error, info};
 use crate::config::Config;
 use crate::doctor::{self, CheckResult};
 use crate::extensions::{parse_episode_info, ExtensionManager, MediaInfo, PlaybackEvent};
+use crate::history::WatchHistory;
 use crate::opensubtitles::OpenSubtitlesClient;
 use crate::prowlarr::ProwlarrClient;
 use crate::streaming::{self, sort_episodes, StreamingSession};
@@ -51,6 +52,8 @@ pub enum UiMessage {
     },
     StreamError(String),
     ProgressUpdate(DownloadProgress),
+    /// Playback position update from mpv (percent watched)
+    PlaybackProgress(f64),
     PlayerExited,
     DoctorComplete(Vec<CheckResult>),
 }
@@ -78,9 +81,9 @@ pub async fn run(config: Config, ext_manager: ExtensionManager, open_settings: b
     // Create app and channels
     let mut app = App::new();
 
-    // Open settings immediately if this is a new config
+    // Open wizard if this is a new config (needs setup)
     if open_settings {
-        app.view = View::Settings;
+        app.view = View::Wizard;
     }
 
     let (tx, mut rx) = mpsc::channel::<UiMessage>(32);
@@ -117,6 +120,11 @@ async fn run_app(
 
     // Video categories: Movies & TV
     const VIDEO_CATEGORIES: &[u32] = &[2000, 5000];
+
+    // Watch history for resume functionality
+    let mut watch_history = WatchHistory::load();
+    // Clean up entries older than 30 days
+    watch_history.cleanup_old(30);
 
     // Streaming session (created when needed)
     let mut streaming_session: Option<std::sync::Arc<StreamingSession>> = None;
@@ -324,16 +332,45 @@ async fn run_app(
                             )
                             .await
                             {
-                                Ok(mut child) => {
+                                Ok(mut handle) => {
+                                    // Spawn position polling task if we have IPC
+                                    let position_handle = if let Some(ref socket_path) = handle.ipc_socket {
+                                        let socket = socket_path.clone();
+                                        let tx_pos = tx.clone();
+                                        Some(tokio::spawn(async move {
+                                            // Wait a bit for mpv to start
+                                            tokio::time::sleep(Duration::from_secs(2)).await;
+                                            loop {
+                                                if let Some((pos, dur)) = streaming::get_mpv_position(&socket).await {
+                                                    let progress = streaming::calculate_progress(pos, dur);
+                                                    let _ = tx_pos.send(UiMessage::PlaybackProgress(progress)).await;
+                                                }
+                                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                            }
+                                        }))
+                                    } else {
+                                        None
+                                    };
+
                                     // Wait for either player to exit OR cancellation
                                     tokio::select! {
-                                        _ = child.wait() => {
+                                        _ = handle.child.wait() => {
                                             info!("player exited normally");
                                         }
                                         _ = cancel_token.cancelled() => {
                                             info!("cancellation requested, killing player");
-                                            let _ = child.kill().await;
+                                            let _ = handle.child.kill().await;
                                         }
+                                    }
+
+                                    // Stop position polling
+                                    if let Some(h) = position_handle {
+                                        h.abort();
+                                    }
+
+                                    // Clean up IPC socket
+                                    if let Some(socket_path) = handle.ipc_socket {
+                                        let _ = std::fs::remove_file(socket_path);
                                     }
                                 }
                                 Err(e) => {
@@ -356,6 +393,14 @@ async fn run_app(
                 } => {
                     app.current_file = file_name.clone();
                     app.streaming_state = StreamingState::Ready { stream_url };
+                    app.playback_progress = 0.0;  // Reset for new playback
+
+                    // Check if there's a resume point for this content
+                    let history_key = WatchHistory::make_key(app.current_tmdb_id, &file_name);
+                    if let Some(progress) = watch_history.has_resume_point(&history_key) {
+                        app.show_resume_prompt = true;
+                        app.resume_progress = progress;
+                    }
 
                     // Notify extensions
                     let (season, episode) = parse_episode_info(&file_name);
@@ -378,9 +423,17 @@ async fn run_app(
                 UiMessage::ProgressUpdate(progress) => {
                     app.download_progress = progress;
                 }
+                UiMessage::PlaybackProgress(percent) => {
+                    app.playback_progress = percent;
+                    debug!(progress = percent, "playback position update");
+                }
                 UiMessage::PlayerExited => {
-                    // Notify extensions before cleanup
-                    let watched_percent = app.download_progress.progress_percent;
+                    // Use playback progress from mpv if available, otherwise fall back to download progress
+                    let watched_percent = if app.playback_progress > 0.0 {
+                        app.playback_progress
+                    } else {
+                        app.download_progress.progress_percent
+                    };
                     let (season, episode) = parse_episode_info(&app.current_file);
                     ext_manager.broadcast(PlaybackEvent::Stopped {
                         media: MediaInfo {
@@ -396,6 +449,11 @@ async fn run_app(
                         },
                         watched_percent,
                     });
+
+                    // Save watch progress to history
+                    let history_key = WatchHistory::make_key(app.current_tmdb_id, &app.current_file);
+                    watch_history.update(history_key, app.current_title.clone(), watched_percent);
+                    watch_history.save();
 
                     // Check if we should auto-play next episode
                     let has_next = app.has_next_episode();
@@ -501,15 +559,40 @@ async fn run_app(
                                         &stream_url,
                                         subtitle_url.as_deref(),
                                     ).await {
-                                        Ok(mut child) => {
+                                        Ok(mut handle) => {
+                                            // Spawn position polling task if we have IPC
+                                            let position_handle = if let Some(ref socket_path) = handle.ipc_socket {
+                                                let socket = socket_path.clone();
+                                                let tx_pos = tx.clone();
+                                                Some(tokio::spawn(async move {
+                                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                                    loop {
+                                                        if let Some((pos, dur)) = streaming::get_mpv_position(&socket).await {
+                                                            let progress = streaming::calculate_progress(pos, dur);
+                                                            let _ = tx_pos.send(UiMessage::PlaybackProgress(progress)).await;
+                                                        }
+                                                        tokio::time::sleep(Duration::from_secs(5)).await;
+                                                    }
+                                                }))
+                                            } else {
+                                                None
+                                            };
+
                                             tokio::select! {
-                                                _ = child.wait() => {
+                                                _ = handle.child.wait() => {
                                                     info!("player exited normally");
                                                 }
                                                 _ = cancel_token.cancelled() => {
                                                     info!("cancellation requested, killing player");
-                                                    let _ = child.kill().await;
+                                                    let _ = handle.child.kill().await;
                                                 }
+                                            }
+
+                                            if let Some(h) = position_handle {
+                                                h.abort();
+                                            }
+                                            if let Some(socket_path) = handle.ipc_socket {
+                                                let _ = std::fs::remove_file(socket_path);
                                             }
                                         }
                                         Err(e) => {
@@ -553,6 +636,80 @@ async fn run_app(
                 }
 
                 match app.view {
+                    View::Wizard => {
+                        if app.wizard_editing {
+                            // Text input mode
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.wizard_editing = false;
+                                    app.wizard_edit_buffer.clear();
+                                }
+                                KeyCode::Enter => {
+                                    // Save the field value
+                                    apply_wizard_edit(app, config);
+                                    app.wizard_editing = false;
+                                    app.wizard_edit_buffer.clear();
+                                }
+                                KeyCode::Backspace => {
+                                    app.wizard_edit_buffer.pop();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.wizard_edit_buffer.push(c);
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            // Navigation mode
+                            match key.code {
+                                KeyCode::Esc => {
+                                    // Go back a step or quit wizard
+                                    if app.wizard_step == WizardStep::Welcome {
+                                        app.should_quit = true;
+                                    } else {
+                                        app.wizard_step = app.wizard_step.prev();
+                                        app.wizard_field_index = 0;
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if app.wizard_step == WizardStep::Done {
+                                        // Finish wizard - save config and go to search
+                                        if let Err(e) = config.save() {
+                                            error!("Failed to save config: {}", e);
+                                        } else {
+                                            info!("Config saved from wizard");
+                                        }
+                                        app.view = View::Search;
+                                    } else if app.wizard_field_count() == 0 {
+                                        // No fields (Welcome) - just advance
+                                        app.wizard_step = app.wizard_step.next();
+                                        app.wizard_field_index = 0;
+                                    } else {
+                                        // Start editing current field
+                                        let current_value = get_wizard_field_value(app, config);
+                                        app.wizard_edit_buffer = current_value;
+                                        app.wizard_editing = true;
+                                    }
+                                }
+                                KeyCode::Tab | KeyCode::Right => {
+                                    // Next step (skip optional steps)
+                                    app.wizard_step = app.wizard_step.next();
+                                    app.wizard_field_index = 0;
+                                }
+                                KeyCode::BackTab | KeyCode::Left => {
+                                    app.wizard_step = app.wizard_step.prev();
+                                    app.wizard_field_index = 0;
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    app.wizard_prev_field();
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    app.wizard_next_field();
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
                     View::Search => match key.code {
                         KeyCode::Esc | KeyCode::Char('q') if app.search_input.is_empty() => {
                             app.should_quit = true;
@@ -1186,16 +1343,41 @@ async fn run_app(
                                     )
                                     .await
                                     {
-                                        Ok(mut child) => {
+                                        Ok(mut handle) => {
+                                            // Spawn position polling task if we have IPC
+                                            let position_handle = if let Some(ref socket_path) = handle.ipc_socket {
+                                                let socket = socket_path.clone();
+                                                let tx_pos = tx.clone();
+                                                Some(tokio::spawn(async move {
+                                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                                    loop {
+                                                        if let Some((pos, dur)) = streaming::get_mpv_position(&socket).await {
+                                                            let progress = streaming::calculate_progress(pos, dur);
+                                                            let _ = tx_pos.send(UiMessage::PlaybackProgress(progress)).await;
+                                                        }
+                                                        tokio::time::sleep(Duration::from_secs(5)).await;
+                                                    }
+                                                }))
+                                            } else {
+                                                None
+                                            };
+
                                             // Wait for either player to exit OR cancellation
                                             tokio::select! {
-                                                _ = child.wait() => {
+                                                _ = handle.child.wait() => {
                                                     info!("player exited normally");
                                                 }
                                                 _ = cancel_token.cancelled() => {
                                                     info!("cancellation requested, killing player");
-                                                    let _ = child.kill().await;
+                                                    let _ = handle.child.kill().await;
                                                 }
+                                            }
+
+                                            if let Some(h) = position_handle {
+                                                h.abort();
+                                            }
+                                            if let Some(socket_path) = handle.ipc_socket {
+                                                let _ = std::fs::remove_file(socket_path);
                                             }
                                         }
                                         Err(e) => {
@@ -1218,7 +1400,23 @@ async fn run_app(
                     },
 
                     View::Streaming => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
+                        KeyCode::Char('r') if app.show_resume_prompt => {
+                            // Resume from saved position
+                            app.show_resume_prompt = false;
+                            info!(progress = app.resume_progress, "user chose to resume playback");
+                            // Note: Actual seeking would require mpv IPC - for now we just dismiss
+                            // and let the user manually seek. A full implementation would pass
+                            // --start=X% to mpv.
+                        }
+                        KeyCode::Char('s') if app.show_resume_prompt => {
+                            // Start from beginning - clear the saved progress
+                            app.show_resume_prompt = false;
+                            let history_key = WatchHistory::make_key(app.current_tmdb_id, &app.current_file);
+                            watch_history.clear(&history_key);
+                            watch_history.save();
+                            info!("user chose to start from beginning");
+                        }
+                        KeyCode::Char('q') | KeyCode::Esc if !app.show_resume_prompt => {
                             // Cancel streaming task if running
                             if let Some(cancel) = streaming_cancel.take() {
                                 info!("user cancelled streaming");
@@ -1234,7 +1432,7 @@ async fn run_app(
                             app.streaming_state = StreamingState::Connecting;
                             app.is_streaming = false;
                         }
-                        KeyCode::Char('n') if app.has_next_episode() => {
+                        KeyCode::Char('n') if app.has_next_episode() && !app.show_resume_prompt => {
                             // Skip to next episode - cancel current player
                             if let Some(cancel) = streaming_cancel.take() {
                                 info!("user skipping to next episode");
@@ -1486,5 +1684,53 @@ fn toggle_settings_bool(app: &App, config: &mut Config) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+/// Get the current value of the selected wizard field
+fn get_wizard_field_value(app: &App, config: &Config) -> String {
+    match app.wizard_step {
+        WizardStep::Prowlarr => match app.wizard_field_index {
+            0 => config.prowlarr.url.clone(),
+            1 => config.prowlarr.apikey.clone(),
+            _ => String::new(),
+        },
+        WizardStep::Tmdb => match app.wizard_field_index {
+            0 => config.tmdb.as_ref().map(|t| t.apikey.clone()).unwrap_or_default(),
+            _ => String::new(),
+        },
+        WizardStep::Player => match app.wizard_field_index {
+            0 => config.player.command.clone(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
+}
+
+/// Apply the wizard edit buffer to the config field
+fn apply_wizard_edit(app: &App, config: &mut Config) {
+    let value = app.wizard_edit_buffer.trim().to_string();
+
+    match app.wizard_step {
+        WizardStep::Prowlarr => match app.wizard_field_index {
+            0 => config.prowlarr.url = value,
+            1 => config.prowlarr.apikey = value,
+            _ => {}
+        },
+        WizardStep::Tmdb => {
+            if app.wizard_field_index == 0 {
+                if value.is_empty() {
+                    config.tmdb = None;
+                } else {
+                    config.tmdb = Some(crate::config::TmdbConfig { apikey: value });
+                }
+            }
+        }
+        WizardStep::Player => {
+            if app.wizard_field_index == 0 {
+                config.player.command = value;
+            }
+        }
+        _ => {}
     }
 }
