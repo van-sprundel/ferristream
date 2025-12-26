@@ -19,8 +19,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --all-features
 
@@ -62,11 +60,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ matrix.target }}
-          cache-on-failure: true
       - name: Upload binaries to release
         uses: taiki-e/upload-rust-binary-action@v1
         with:
