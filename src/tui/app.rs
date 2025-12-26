@@ -59,6 +59,18 @@ impl SettingsSection {
         }
     }
 
+    /// Number of editable fields in this section
+    pub fn field_count(&self) -> usize {
+        match self {
+            SettingsSection::Prowlarr => 2,  // url, apikey
+            SettingsSection::Tmdb => 1,      // apikey
+            SettingsSection::Player => 2,    // command, args
+            SettingsSection::Subtitles => 3, // enabled, language, api_key
+            SettingsSection::Discord => 2,   // enabled, app_id
+            SettingsSection::Trakt => 3,     // enabled, client_id, access_token
+        }
+    }
+
     pub const ALL: &'static [SettingsSection] = &[
         SettingsSection::Prowlarr,
         SettingsSection::Tmdb,
@@ -185,6 +197,10 @@ pub struct App {
 
     // Settings
     pub settings_section: SettingsSection,
+    pub settings_field_index: usize,
+    pub settings_editing: bool,
+    pub settings_edit_buffer: String,
+    pub settings_dirty: bool, // Has unsaved changes
 }
 
 impl App {
@@ -217,7 +233,25 @@ impl App {
             doctor_results: Vec::new(),
             is_checking: false,
             settings_section: SettingsSection::default(),
+            settings_field_index: 0,
+            settings_editing: false,
+            settings_edit_buffer: String::new(),
+            settings_dirty: false,
         }
+    }
+
+    pub fn settings_next_field(&mut self) {
+        let max = self.settings_section.field_count();
+        self.settings_field_index = (self.settings_field_index + 1) % max;
+    }
+
+    pub fn settings_prev_field(&mut self) {
+        let max = self.settings_section.field_count();
+        self.settings_field_index = if self.settings_field_index == 0 {
+            max - 1
+        } else {
+            self.settings_field_index - 1
+        };
     }
 
     pub fn select_next(&mut self) {
