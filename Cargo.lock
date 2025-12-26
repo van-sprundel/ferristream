@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "ferristream"
-version = "0.0.6"
+version = "0.0.9"
 dependencies = [
  "crossterm 0.28.1",
  "directories 5.0.1",
