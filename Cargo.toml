@@ -1,7 +1,7 @@
 [package]
 name = "ferristream"
-version = "0.0.5"
-edition = "2021"
+version = "0.0.6"
+edition = "2024"
 
 [dependencies]
 librqbit = { version = "8.1.1", default-features = false, features = ["http-api", "tracing-subscriber-utils", "rust-tls"] }
