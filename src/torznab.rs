@@ -202,7 +202,7 @@ impl TorznabClient {
                 }
                 Ok(Event::Text(ref e)) => {
                     if let Some(ref mut item) = current_item {
-                        let text = e.unescape().unwrap_or_default().to_string();
+                        let text = e.decode().unwrap_or_default().to_string();
 
                         match current_element.as_str() {
                             "title" => item.title = text,
