@@ -69,7 +69,9 @@ pub fn parse_episode_info(filename: &str) -> (Option<u32>, Option<u32>) {
     let compact_re = Regex::new(r"[.\s](\d)(\d{2})[.\s]").unwrap();
     if let Some(caps) = compact_re.captures(filename) {
         if let (Some(s), Some(e)) = (caps.get(1), caps.get(2)) {
-            if let (Ok(season), Ok(episode)) = (s.as_str().parse::<u32>(), e.as_str().parse::<u32>()) {
+            if let (Ok(season), Ok(episode)) =
+                (s.as_str().parse::<u32>(), e.as_str().parse::<u32>())
+            {
                 // Only valid if episode isn't too high (avoid matching years like 1999)
                 if (1..=99).contains(&season) && (1..=99).contains(&episode) {
                     return (Some(season), Some(episode));
@@ -177,10 +179,7 @@ mod tests {
             parse_episode_info("Show.Name.S10E23.720p.mkv"),
             (Some(10), Some(23))
         );
-        assert_eq!(
-            parse_episode_info("show.s1e5.web.mp4"),
-            (Some(1), Some(5))
-        );
+        assert_eq!(parse_episode_info("show.s1e5.web.mp4"), (Some(1), Some(5)));
     }
 
     #[test]
@@ -209,19 +208,16 @@ mod tests {
 
     #[test]
     fn test_parse_episode_no_match() {
-        assert_eq!(parse_episode_info("Movie.2019.1080p.BluRay.mkv"), (None, None));
+        assert_eq!(
+            parse_episode_info("Movie.2019.1080p.BluRay.mkv"),
+            (None, None)
+        );
         assert_eq!(parse_episode_info("Random.File.Name.mkv"), (None, None));
     }
 
     #[test]
     fn test_parse_episode_case_insensitive() {
-        assert_eq!(
-            parse_episode_info("show.S01e02.mkv"),
-            (Some(1), Some(2))
-        );
-        assert_eq!(
-            parse_episode_info("show.s01E02.mkv"),
-            (Some(1), Some(2))
-        );
+        assert_eq!(parse_episode_info("show.S01e02.mkv"), (Some(1), Some(2)));
+        assert_eq!(parse_episode_info("show.s01E02.mkv"), (Some(1), Some(2)));
     }
 }

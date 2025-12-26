@@ -120,7 +120,10 @@ impl Episode {
 
     /// Format for Prowlarr search query
     pub fn search_query(&self, show_name: &str) -> String {
-        format!("{} S{:02}E{:02}", show_name, self.season_number, self.episode_number)
+        format!(
+            "{} S{:02}E{:02}",
+            show_name, self.season_number, self.episode_number
+        )
     }
 }
 
@@ -212,10 +215,7 @@ impl TmdbClient {
 
     /// Get TV show details including list of seasons
     pub async fn get_tv_details(&self, tv_id: u64) -> Result<TvDetails, TmdbError> {
-        let url = format!(
-            "{}/3/tv/{}?api_key={}",
-            self.base_url, tv_id, self.api_key
-        );
+        let url = format!("{}/3/tv/{}?api_key={}", self.base_url, tv_id, self.api_key);
 
         debug!(tv_id, "fetching TV details");
 
