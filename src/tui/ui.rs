@@ -521,13 +521,17 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
         );
     frame.render_widget(title, chunks[0]);
 
-    // Status
-    let (status_text, status_color) = match &app.streaming_state {
-        StreamingState::Connecting => ("Connecting...", Color::Yellow),
-        StreamingState::FetchingMetadata => ("Fetching metadata...", Color::Yellow),
-        StreamingState::Ready { .. } => ("Playing", Color::Green),
-        StreamingState::Playing => ("Playing", Color::Green),
-        StreamingState::Error(e) => (e.as_str(), Color::Red),
+    // Status - show racing message if active
+    let (status_text, status_color) = if let Some(ref racing_msg) = app.racing_message {
+        (racing_msg.as_str(), Color::Magenta)
+    } else {
+        match &app.streaming_state {
+            StreamingState::Connecting => ("Connecting...", Color::Yellow),
+            StreamingState::FetchingMetadata => ("Fetching metadata...", Color::Yellow),
+            StreamingState::Ready { .. } => ("Playing", Color::Green),
+            StreamingState::Playing => ("Playing", Color::Green),
+            StreamingState::Error(e) => (e.as_str(), Color::Red),
+        }
     };
 
     let status = Paragraph::new(status_text)

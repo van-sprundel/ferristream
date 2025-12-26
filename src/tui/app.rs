@@ -216,6 +216,7 @@ pub struct App {
     pub search_input: String,
     pub is_searching: bool,
     pub search_error: Option<String>,
+    pub search_id: u64, // Incremented for each search to ignore stale results
 
     // Autocomplete
     pub suggestions: Vec<TmdbSuggestion>,
@@ -280,6 +281,9 @@ pub struct App {
 
     // Playback tracking (from mpv IPC)
     pub playback_progress: f64,  // Actual playback progress from player
+
+    // Racing status
+    pub racing_message: Option<String>,
 }
 
 impl App {
@@ -290,6 +294,7 @@ impl App {
             search_input: String::new(),
             is_searching: false,
             search_error: None,
+            search_id: 0,
             suggestions: Vec::new(),
             selected_suggestion: 0,
             is_fetching_suggestions: false,
@@ -332,6 +337,7 @@ impl App {
             show_resume_prompt: false,
             resume_progress: 0.0,
             playback_progress: 0.0,
+            racing_message: None,
         }
     }
 
