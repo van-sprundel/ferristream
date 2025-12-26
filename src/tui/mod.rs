@@ -25,15 +25,13 @@ use crate::extensions::{parse_episode_info, ExtensionManager, MediaInfo, Playbac
 use crate::history::WatchHistory;
 use crate::opensubtitles::OpenSubtitlesClient;
 use crate::prowlarr::ProwlarrClient;
-use crate::streaming::{self, sort_episodes, StreamingSession};
+use crate::streaming::{self, sort_episodes, StreamingSession, TorrentValidation, VideoFile};
 use crate::tmdb::{parse_torrent_title, TmdbClient};
 use crate::torznab::{TorrentResult, TorznabClient};
 
-use crate::streaming::VideoFile;
-
 /// Messages sent from background tasks to the UI
 pub enum UiMessage {
-    SearchComplete(Vec<TorrentResult>),
+    SearchComplete { results: Vec<TorrentResult>, search_id: u64 },
     SearchError(String),
     TmdbInfo(TmdbMetadata),
     Suggestions(Vec<TmdbSuggestion>),
@@ -45,6 +43,11 @@ pub enum UiMessage {
     TorrentMetadata {
         torrent_info: crate::streaming::TorrentInfo,
         session: std::sync::Arc<StreamingSession>,
+    },
+    /// Racing torrents - show status
+    RacingStatus {
+        count: usize,
+        message: String,
     },
     StreamReady {
         file_name: String,
@@ -140,16 +143,119 @@ async fn run_app(
         // Handle messages from background tasks
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                UiMessage::SearchComplete(results) => {
+                UiMessage::SearchComplete { results, search_id } => {
+                    // Ignore results from stale searches
+                    if search_id != app.search_id {
+                        debug!(search_id, current = app.search_id, "ignoring stale search results");
+                        continue;
+                    }
+
                     app.is_searching = false;
                     app.results = results;
                     app.sort_results(); // Apply current sort order
                     app.selected_index = 0;
+
                     if app.results.is_empty() {
                         app.search_error = Some("No results found".to_string());
                     } else {
                         app.search_error = None;
-                        app.view = View::Results;
+
+                        // Check if auto-race is enabled
+                        let auto_race = config.streaming.auto_race as usize;
+                        if auto_race > 0 && !app.is_streaming {
+                            // Clean up any previous streaming session
+                            if let Some(cancel) = streaming_cancel.take() {
+                                cancel.cancel();
+                            }
+                            if let Some(session) = streaming_session.take() {
+                                session.cleanup().await;
+                            }
+
+                            // Get ALL torrent URLs - we'll race through them until we find a match
+                            let urls: Vec<String> = app.results.iter()
+                                .filter_map(|r| r.get_torrent_url())
+                                .collect();
+
+                            if !urls.is_empty() {
+                                // Clear previous streaming state
+                                app.current_file.clear();
+                                app.current_title.clear();
+                                app.available_files.clear();
+                                app.download_progress = DownloadProgress::default();
+                                pending_torrent_info = None;
+
+                                app.is_streaming = true;
+                                app.racing_message = Some(format!("Racing {} torrents...", urls.len().min(auto_race)));
+                                app.view = View::Streaming;
+                                app.streaming_state = StreamingState::Connecting;
+
+                                let tx = tx.clone();
+                                let temp_dir = config.storage.temp_dir();
+                                let cancel_token = CancellationToken::new();
+                                streaming_cancel = Some(cancel_token.clone());
+
+                                // Build validation criteria from search query and TMDB info
+                                let mut title_keywords = TorrentValidation::extract_keywords(&app.search_input);
+                                let mut year: Option<u16> = None;
+
+                                // Add TMDB title keywords and year if available
+                                if let Some(ref tmdb) = app.tmdb_info {
+                                    title_keywords.extend(TorrentValidation::extract_keywords(&tmdb.title));
+                                    year = tmdb.year;
+                                }
+                                // Deduplicate keywords
+                                title_keywords.sort();
+                                title_keywords.dedup();
+
+                                let validation = if title_keywords.is_empty() && year.is_none() {
+                                    None
+                                } else {
+                                    Some(TorrentValidation::new(title_keywords.clone(), year))
+                                };
+                                info!(keywords = ?title_keywords, year = ?year, "validation criteria");
+
+                                let concurrent = auto_race;
+                                tokio::spawn(async move {
+                                    let _ = tx.send(UiMessage::RacingStatus {
+                                        count: concurrent.min(urls.len()),
+                                        message: "connecting...".to_string(),
+                                    }).await;
+
+                                    let session = match StreamingSession::new(temp_dir).await {
+                                        Ok(s) => std::sync::Arc::new(s),
+                                        Err(e) => {
+                                            let _ = tx.send(UiMessage::StreamError(e.to_string())).await;
+                                            return;
+                                        }
+                                    };
+
+                                    if cancel_token.is_cancelled() {
+                                        session.cleanup().await;
+                                        return;
+                                    }
+
+                                    match session.race_torrents(urls, validation, concurrent, cancel_token.clone()).await {
+                                        Ok((_winner_idx, torrent_info)) => {
+                                            let _ = tx.send(UiMessage::TorrentMetadata {
+                                                torrent_info,
+                                                session,
+                                            }).await;
+                                        }
+                                        Err(e) => {
+                                            // Don't report error if cancelled
+                                            if !cancel_token.is_cancelled() {
+                                                let _ = tx.send(UiMessage::StreamError(e.to_string())).await;
+                                            }
+                                            session.cleanup().await;
+                                        }
+                                    }
+                                });
+                            } else {
+                                app.view = View::Results;
+                            }
+                        } else {
+                            app.view = View::Results;
+                        }
                     }
                 }
                 UiMessage::SearchError(e) => {
@@ -187,10 +293,14 @@ async fn run_app(
                     app.doctor_results = results;
                     app.is_checking = false;
                 }
+                UiMessage::RacingStatus { count, message } => {
+                    app.racing_message = Some(format!("Racing {} torrents: {}", count, message));
+                }
                 UiMessage::TorrentMetadata {
                     torrent_info,
                     session,
                 } => {
+                    app.racing_message = None; // Clear racing message
                     app.pending_torrent_id = Some(torrent_info.id);
                     streaming_session = Some(session.clone());
                     pending_torrent_info = Some(torrent_info.clone());
@@ -612,13 +722,21 @@ async fn run_app(
                         app.view = View::FileSelection;
                         app.streaming_state = StreamingState::FetchingMetadata;
                     } else {
-                        // No next episode or single file - cleanup and go back to results
+                        // No next episode or single file - cleanup and go back
                         if let Some(session) = streaming_session.take() {
                             session.cleanup().await;
                         }
                         pending_torrent_info = None;
                         app.available_files.clear();
-                        app.view = View::Results;
+                        app.current_file.clear();
+                        app.current_title.clear();
+                        app.racing_message = None;
+                        // Go back to Search if auto-race is enabled (user never saw Results)
+                        app.view = if config.streaming.auto_race > 0 {
+                            View::Search
+                        } else {
+                            View::Results
+                        };
                         app.streaming_state = StreamingState::Connecting;
                         app.is_streaming = false;
                         info!("streaming ended, ready for next");
@@ -750,10 +868,12 @@ async fn run_app(
                             } else {
                                 // Movie or no suggestion - do torrent search
                                 info!(query = %app.search_input, "starting search");
+                                app.search_id += 1; // Increment to invalidate any in-flight searches
                                 app.is_searching = true;
                                 app.search_error = None;
                                 app.tmdb_info = None;
                                 let query = app.search_input.clone();
+                                let current_search_id = app.search_id;
                             let tx = tx.clone();
                             let prowlarr_url = config.prowlarr.url.clone();
                             let prowlarr_apikey = config.prowlarr.apikey.clone();
@@ -854,10 +974,10 @@ async fn run_app(
                                         let _ = tx.send(UiMessage::SearchError(err)).await;
                                     } else {
                                         let _ =
-                                            tx.send(UiMessage::SearchComplete(streamable)).await;
+                                            tx.send(UiMessage::SearchComplete { results: streamable, search_id: current_search_id }).await;
                                     }
                                 } else {
-                                    let _ = tx.send(UiMessage::SearchComplete(streamable)).await;
+                                    let _ = tx.send(UiMessage::SearchComplete { results: streamable, search_id: current_search_id }).await;
                                 }
                             });
                             }
@@ -1019,6 +1139,7 @@ async fn run_app(
                                 let query = episode.search_query(&tv_details.name);
                                 info!(query = %query, "searching for episode");
 
+                                app.search_id += 1; // Increment to invalidate any in-flight searches
                                 app.is_searching = true;
                                 app.search_error = None;
                                 app.current_title = format!("{} - {}", tv_details.name, episode.display_title());
@@ -1026,6 +1147,7 @@ async fn run_app(
                                     .and_then(|d| d.split('-').next()?.parse().ok());
                                 app.current_media_type = Some("tv".to_string());
 
+                                let current_search_id = app.search_id;
                                 let tx = tx.clone();
                                 let prowlarr_url = config.prowlarr.url.clone();
                                 let prowlarr_apikey = config.prowlarr.apikey.clone();
@@ -1056,7 +1178,15 @@ async fn run_app(
                                                     all_results.extend(results);
                                                 }
                                             }
-                                            let _ = tx.send(UiMessage::SearchComplete(all_results)).await;
+                                            // Filter for streamable and sort by seeders
+                                            let mut streamable: Vec<_> = all_results
+                                                .into_iter()
+                                                .filter(|r| r.is_streamable())
+                                                .collect();
+                                            streamable.sort_by(|a, b| {
+                                                b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0))
+                                            });
+                                            let _ = tx.send(UiMessage::SearchComplete { results: streamable, search_id: current_search_id }).await;
                                         }
                                         Err(e) => {
                                             let _ = tx.send(UiMessage::SearchError(e.to_string())).await;
@@ -1428,7 +1558,14 @@ async fn run_app(
                             }
                             pending_torrent_info = None;
                             app.available_files.clear();
-                            app.view = View::Results;
+                            app.racing_message = None;
+                            // Go back to Search if auto-race is enabled (user never saw Results)
+                            // Otherwise go back to Results
+                            app.view = if config.streaming.auto_race > 0 {
+                                View::Search
+                            } else {
+                                View::Results
+                            };
                             app.streaming_state = StreamingState::Connecting;
                             app.is_streaming = false;
                         }
