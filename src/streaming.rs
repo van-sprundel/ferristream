@@ -99,6 +99,7 @@ fn extract_subtitle_language(filename: &str) -> Option<String> {
     None
 }
 
+#[derive(Clone)]
 pub struct StreamingSession {
     session: Arc<Session>,
     http_addr: SocketAddr,
@@ -171,6 +172,151 @@ impl StreamingSession {
         }
     }
 
+    /// Race torrents and return the first one that passes validation
+    /// Starts with `concurrent` torrents racing, and adds more as they fail/get rejected
+    /// Returns (winning_index, torrent_info) where winning_index is the position in the input list
+    pub async fn race_torrents(
+        &self,
+        urls: Vec<String>,
+        validation: Option<TorrentValidation>,
+        concurrent: usize,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<(usize, TorrentInfo), StreamError> {
+        use tokio::sync::mpsc;
+
+        if urls.is_empty() {
+            return Err(StreamError::TorrentError("no torrents to race".to_string()));
+        }
+
+        let total = urls.len();
+        let concurrent = concurrent.min(total);
+        info!(total, concurrent, "racing torrents");
+
+        let (tx, mut rx) = mpsc::channel::<(usize, Result<TorrentInfo, StreamError>)>(total);
+
+        let mut urls_iter = urls.into_iter().enumerate();
+        let mut in_flight = 0;
+
+        // Start initial batch
+        for _ in 0..concurrent {
+            if let Some((idx, url)) = urls_iter.next() {
+                let session = self.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let result = session.add_torrent(&url).await;
+                    let _ = tx.send((idx, result)).await;
+                });
+                in_flight += 1;
+            }
+        }
+
+        // Process results and add more torrents as needed
+        while in_flight > 0 {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    info!("racing cancelled");
+                    return Err(StreamError::TorrentError("cancelled".to_string()));
+                }
+                result = rx.recv() => {
+                    if let Some((idx, result)) = result {
+                        in_flight -= 1;
+
+                        match result {
+                            Ok(info) => {
+                                // Validate the filename if validation is provided
+                                if let Some(ref v) = validation {
+                                    if !v.matches(&info.selected_file.name) {
+                                        info!(
+                                            idx,
+                                            name = %info.selected_file.name,
+                                            "torrent rejected - filename doesn't match"
+                                        );
+                                        // Add next torrent to keep racing
+                                        if let Some((next_idx, url)) = urls_iter.next() {
+                                            let session = self.clone();
+                                            let tx = tx.clone();
+                                            tokio::spawn(async move {
+                                                let result = session.add_torrent(&url).await;
+                                                let _ = tx.send((next_idx, result)).await;
+                                            });
+                                            in_flight += 1;
+                                        }
+                                        continue;
+                                    }
+                                }
+                                info!(idx, name = %info.selected_file.name, "torrent won the race");
+                                return Ok((idx, info));
+                            }
+                            Err(e) => {
+                                debug!(idx, error = %e, "torrent failed");
+                                // Add next torrent to keep racing
+                                if let Some((next_idx, url)) = urls_iter.next() {
+                                    let session = self.clone();
+                                    let tx = tx.clone();
+                                    tokio::spawn(async move {
+                                        let result = session.add_torrent(&url).await;
+                                        let _ = tx.send((next_idx, result)).await;
+                                    });
+                                    in_flight += 1;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(StreamError::TorrentError("no matching torrents found".to_string()))
+    }
+}
+
+/// Validation criteria for racing torrents
+#[derive(Debug, Clone)]
+pub struct TorrentValidation {
+    /// Title keywords - at least one must be present in filename
+    pub title_keywords: Vec<String>,
+    /// Expected year - if set, must be present in filename
+    pub year: Option<u16>,
+}
+
+impl TorrentValidation {
+    pub fn new(title_keywords: Vec<String>, year: Option<u16>) -> Self {
+        Self { title_keywords, year }
+    }
+
+    /// Check if a filename matches the validation criteria
+    pub fn matches(&self, filename: &str) -> bool {
+        let filename_lower = filename.to_lowercase();
+
+        // Check title keywords - at least one must match
+        let title_matches = self.title_keywords.is_empty()
+            || self.title_keywords.iter().any(|kw| filename_lower.contains(kw));
+
+        // Check year if specified
+        let year_matches = match self.year {
+            Some(year) => filename.contains(&year.to_string()),
+            None => true,
+        };
+
+        title_matches && year_matches
+    }
+
+    /// Extract title keywords from a query string
+    pub fn extract_keywords(query: &str) -> Vec<String> {
+        let stop_words = ["the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for"];
+        query
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| word.len() >= 3)
+            .map(|word| word.to_lowercase())
+            .filter(|word| !stop_words.contains(&word.as_str()))
+            // Filter out years from title keywords (they're handled separately)
+            .filter(|word| word.parse::<u16>().is_err() || word.len() != 4)
+            .collect()
+    }
+}
+
+impl StreamingSession {
     /// Add a torrent by URL (magnet or .torrent file URL)
     pub fn add_torrent(
         &self,
@@ -769,16 +915,27 @@ pub fn is_subtitle_file(filename: &str) -> bool {
     SUBTITLE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
+/// Result of launching a player with IPC support
+pub struct PlayerHandle {
+    pub child: tokio::process::Child,
+    /// Path to mpv IPC socket (only for mpv)
+    pub ipc_socket: Option<PathBuf>,
+}
+
 pub async fn launch_player(
     command: &str,
     args: &[String],
     stream_url: &str,
     subtitle_url: Option<&str>,
-) -> Result<tokio::process::Child, StreamError> {
+) -> Result<PlayerHandle, StreamError> {
     let mut cmd = Command::new(command);
+    let mut ipc_socket = None;
 
     // Only add mpv-specific args if using mpv
     if command.contains("mpv") {
+        // Create IPC socket path
+        let socket_path = std::env::temp_dir().join(format!("ferristream-mpv-{}.sock", std::process::id()));
+
         cmd.args([
             "--force-seekable=yes",
             "--cache=yes",
@@ -786,6 +943,10 @@ pub async fn launch_player(
             "--hwdec=auto",
             "--really-quiet", // Suppress all terminal output
         ]);
+
+        // Enable IPC for position tracking
+        cmd.arg(format!("--input-ipc-server={}", socket_path.display()));
+        ipc_socket = Some(socket_path);
 
         // Add subtitle file if provided
         if let Some(sub_url) = subtitle_url {
@@ -808,8 +969,54 @@ pub async fn launch_player(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    cmd.spawn()
-        .map_err(|e| StreamError::PlayerError(command.to_string(), e.to_string()))
+    let child = cmd.spawn()
+        .map_err(|e| StreamError::PlayerError(command.to_string(), e.to_string()))?;
+
+    Ok(PlayerHandle { child, ipc_socket })
+}
+
+/// Get current playback position from mpv via IPC
+/// Returns (position_seconds, duration_seconds) if successful
+pub async fn get_mpv_position(socket_path: &std::path::Path) -> Option<(f64, f64)> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    // Connect to mpv socket
+    let stream = UnixStream::connect(socket_path).await.ok()?;
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    // Request time-pos
+    writer.write_all(b"{\"command\": [\"get_property\", \"time-pos\"]}\n").await.ok()?;
+    let mut pos_response = String::new();
+    reader.read_line(&mut pos_response).await.ok()?;
+
+    // Request duration
+    writer.write_all(b"{\"command\": [\"get_property\", \"duration\"]}\n").await.ok()?;
+    let mut dur_response = String::new();
+    reader.read_line(&mut dur_response).await.ok()?;
+
+    // Parse responses
+    let pos: f64 = serde_json::from_str::<serde_json::Value>(&pos_response)
+        .ok()?
+        .get("data")?
+        .as_f64()?;
+
+    let dur: f64 = serde_json::from_str::<serde_json::Value>(&dur_response)
+        .ok()?
+        .get("data")?
+        .as_f64()?;
+
+    Some((pos, dur))
+}
+
+/// Calculate playback progress as percentage
+pub fn calculate_progress(position: f64, duration: f64) -> f64 {
+    if duration > 0.0 {
+        (position / duration * 100.0).min(100.0)
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
@@ -945,5 +1152,47 @@ mod tests {
         assert!(files[0].name.contains("E01"));
         assert!(files[1].name.contains("E02"));
         assert!(files[2].name.contains("E03"));
+    }
+
+    #[test]
+    fn test_extract_keywords() {
+        // Basic extraction - years are filtered out
+        let kw = TorrentValidation::extract_keywords("Garfield 2024");
+        assert!(kw.contains(&"garfield".to_string()));
+        assert!(!kw.contains(&"2024".to_string())); // Years are filtered
+
+        // Filters short words and stop words
+        let kw = TorrentValidation::extract_keywords("The Lord of the Rings");
+        assert!(kw.contains(&"lord".to_string()));
+        assert!(kw.contains(&"rings".to_string()));
+        assert!(!kw.contains(&"the".to_string()));
+        assert!(!kw.contains(&"of".to_string()));
+
+        // Handles special characters
+        let kw = TorrentValidation::extract_keywords("Spider-Man: No Way Home (2021)");
+        assert!(kw.contains(&"spider".to_string()));
+        assert!(kw.contains(&"man".to_string()));
+        assert!(kw.contains(&"way".to_string()));
+        assert!(kw.contains(&"home".to_string()));
+        assert!(!kw.contains(&"2021".to_string())); // Years are filtered
+    }
+
+    #[test]
+    fn test_torrent_validation() {
+        // Title + year validation
+        let v = TorrentValidation::new(vec!["garfield".to_string()], Some(2024));
+        assert!(v.matches("Garfield.2024.1080p.BluRay.mkv"));
+        assert!(!v.matches("Garfield.On.The.Town.1983.mkv")); // Wrong year
+        assert!(!v.matches("Scooby-Doo.2024.mkv")); // Wrong title
+
+        // Title only (no year)
+        let v = TorrentValidation::new(vec!["garfield".to_string()], None);
+        assert!(v.matches("Garfield.2024.1080p.BluRay.mkv"));
+        assert!(v.matches("Garfield.On.The.Town.1983.mkv")); // Any year OK
+
+        // Multiple keywords - any can match
+        let v = TorrentValidation::new(vec!["spider".to_string(), "man".to_string()], Some(2021));
+        assert!(v.matches("Spider-Man.No.Way.Home.2021.mkv"));
+        assert!(v.matches("The.Amazing.Spider-Man.2021.mkv")); // "spider" matches
     }
 }

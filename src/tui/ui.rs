@@ -10,10 +10,15 @@ use crate::doctor::CheckStatus;
 
 use crate::config::Config;
 
-use super::app::{App, SettingsSection, StreamingState, View};
+use super::app::{App, SettingsSection, StreamingState, View, WizardStep};
 
 pub fn draw(frame: &mut Frame, app: &App, config: Option<&Config>) {
     match app.view {
+        View::Wizard => {
+            if let Some(cfg) = config {
+                draw_wizard(frame, app, cfg);
+            }
+        }
         View::Search => draw_search(frame, app),
         View::Results => draw_results(frame, app),
         View::TvSeasons => draw_tv_seasons(frame, app),
@@ -27,6 +32,192 @@ pub fn draw(frame: &mut Frame, app: &App, config: Option<&Config>) {
             }
         }
     }
+}
+
+fn draw_wizard(frame: &mut Frame, app: &App, config: &Config) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Length(3),  // Progress
+            Constraint::Min(0),     // Content
+            Constraint::Length(2),  // Help
+        ])
+        .split(frame.area());
+
+    // Title
+    let title = Paragraph::new("Welcome to ferristream")
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default());
+    frame.render_widget(title, chunks[0]);
+
+    // Progress bar (step indicator)
+    let progress = format!(
+        "Step {} of {} - {}",
+        app.wizard_step.index() + 1,
+        WizardStep::total(),
+        match app.wizard_step {
+            WizardStep::Welcome => "Welcome",
+            WizardStep::Prowlarr => "Prowlarr Setup",
+            WizardStep::Tmdb => "TMDB (Optional)",
+            WizardStep::Player => "Player",
+            WizardStep::Done => "Ready!",
+        }
+    );
+    let progress_widget = Paragraph::new(progress)
+        .style(Style::default().fg(Color::Yellow))
+        .block(Block::default().borders(Borders::BOTTOM));
+    frame.render_widget(progress_widget, chunks[1]);
+
+    // Content based on step
+    let content_lines: Vec<Line> = match app.wizard_step {
+        WizardStep::Welcome => vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "Let's get you set up!",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("This wizard will help you configure:"),
+            Line::from("  - Prowlarr connection (required)"),
+            Line::from("  - TMDB for metadata (optional)"),
+            Line::from("  - Video player settings"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press Enter to continue...",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ],
+        WizardStep::Prowlarr => {
+            let fields = [
+                ("URL", config.prowlarr.url.clone(), 0),
+                ("API Key", mask_secret(&config.prowlarr.apikey), 1),
+            ];
+            build_wizard_fields(app, &fields)
+        }
+        WizardStep::Tmdb => {
+            let api_key = config
+                .tmdb
+                .as_ref()
+                .map(|t| mask_secret(&t.apikey))
+                .unwrap_or_else(|| "(not set - optional)".to_string());
+            let fields = [("API Key", api_key, 0)];
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "TMDB provides movie/TV metadata and autocomplete.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    "This is optional - press Tab to skip.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+            ];
+            lines.extend(build_wizard_fields(app, &fields));
+            lines
+        }
+        WizardStep::Player => {
+            let fields = [("Command", config.player.command.clone(), 0)];
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Which video player do you use?",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    "Common options: mpv, vlc, iina",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+            ];
+            lines.extend(build_wizard_fields(app, &fields));
+            lines
+        }
+        WizardStep::Done => vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "All set!",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("Your configuration has been saved."),
+            Line::from(""),
+            Line::from("You can always change these settings later"),
+            Line::from("by pressing 's' in the main screen."),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press Enter to start using ferristream!",
+                Style::default().fg(Color::Cyan),
+            )),
+        ],
+    };
+
+    let content = Paragraph::new(content_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(match app.wizard_step {
+                WizardStep::Welcome => "Setup Wizard",
+                WizardStep::Prowlarr => "Prowlarr",
+                WizardStep::Tmdb => "TMDB",
+                WizardStep::Player => "Player",
+                WizardStep::Done => "Complete",
+            }),
+    );
+    frame.render_widget(content, chunks[2]);
+
+    // Help
+    let help_text = if app.wizard_editing {
+        "Enter: save | Esc: cancel"
+    } else {
+        match app.wizard_step {
+            WizardStep::Welcome => "Enter: continue | Esc: quit",
+            WizardStep::Done => "Enter: finish | Esc: back",
+            _ => "Enter: edit | Tab: next step | Esc: back",
+        }
+    };
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[3]);
+}
+
+fn build_wizard_fields(app: &App, fields: &[(&str, String, usize)]) -> Vec<Line<'static>> {
+    fields
+        .iter()
+        .map(|(label, value, idx)| {
+            let is_selected = *idx == app.wizard_field_index;
+            let prefix = if is_selected { "▸ " } else { "  " };
+
+            let display_value = if is_selected && app.wizard_editing {
+                format!("{}▌", app.wizard_edit_buffer)
+            } else {
+                value.clone()
+            };
+
+            let label_style = Style::default().add_modifier(Modifier::BOLD);
+            let value_style = if is_selected {
+                if app.wizard_editing {
+                    Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                }
+            } else {
+                Style::default()
+            };
+
+            Line::from(vec![
+                Span::raw(prefix.to_string()),
+                Span::styled(format!("{}: ", label), label_style),
+                Span::styled(display_value, value_style),
+            ])
+        })
+        .collect()
 }
 
 fn draw_search(frame: &mut Frame, app: &App) {
@@ -330,13 +521,17 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
         );
     frame.render_widget(title, chunks[0]);
 
-    // Status
-    let (status_text, status_color) = match &app.streaming_state {
-        StreamingState::Connecting => ("Connecting...", Color::Yellow),
-        StreamingState::FetchingMetadata => ("Fetching metadata...", Color::Yellow),
-        StreamingState::Ready { .. } => ("Playing", Color::Green),
-        StreamingState::Playing => ("Playing", Color::Green),
-        StreamingState::Error(e) => (e.as_str(), Color::Red),
+    // Status - show racing message if active
+    let (status_text, status_color) = if let Some(ref racing_msg) = app.racing_message {
+        (racing_msg.as_str(), Color::Magenta)
+    } else {
+        match &app.streaming_state {
+            StreamingState::Connecting => ("Connecting...", Color::Yellow),
+            StreamingState::FetchingMetadata => ("Fetching metadata...", Color::Yellow),
+            StreamingState::Ready { .. } => ("Playing", Color::Green),
+            StreamingState::Playing => ("Playing", Color::Green),
+            StreamingState::Error(e) => (e.as_str(), Color::Red),
+        }
     };
 
     let status = Paragraph::new(status_text)
@@ -344,32 +539,47 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL).title("Status"));
     frame.render_widget(status, chunks[1]);
 
-    // Progress bar
-    let progress = &app.download_progress;
-    let progress_label = format!(
-        "{:.1}% ({} / {})",
-        progress.progress_percent,
-        format_bytes(progress.downloaded_bytes),
-        format_bytes(progress.total_bytes)
-    );
+    // Progress bars - show both download and playback progress if available
+    let download = &app.download_progress;
+
+    // Show playback progress if we have it from mpv, otherwise download progress
+    let (gauge_title, gauge_percent, gauge_label) = if app.playback_progress > 0.0 {
+        (
+            "Playback Progress",
+            app.playback_progress,
+            format!("{:.1}% watched", app.playback_progress)
+        )
+    } else {
+        (
+            "Download Progress",
+            download.progress_percent,
+            format!(
+                "{:.1}% ({} / {})",
+                download.progress_percent,
+                format_bytes(download.downloaded_bytes),
+                format_bytes(download.total_bytes)
+            )
+        )
+    };
 
     let gauge = Gauge::default()
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Download Progress"),
+                .title(gauge_title),
         )
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
-        .percent((progress.progress_percent.min(100.0)) as u16)
-        .label(progress_label);
+        .percent((gauge_percent.min(100.0)) as u16)
+        .label(gauge_label);
     frame.render_widget(gauge, chunks[2]);
 
-    // Stats line
+    // Stats line - show download stats
     let stats_text = format!(
-        "↓ {}/s  ↑ {}/s  Peers: {}",
-        format_bytes(progress.download_speed),
-        format_bytes(progress.upload_speed),
-        progress.peers_connected
+        "↓ {}/s  ↑ {}/s  Peers: {}  DL: {:.0}%",
+        format_bytes(download.download_speed),
+        format_bytes(download.upload_speed),
+        download.peers_connected,
+        download.progress_percent
     );
     let stats = Paragraph::new(stats_text)
         .style(Style::default().fg(Color::White))
@@ -407,13 +617,54 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
     }
 
     // Help
-    let help_text = if app.has_next_episode() {
+    let help_text = if app.show_resume_prompt {
+        "r: resume | s: start over"
+    } else if app.has_next_episode() {
         "q: stop & return | n: skip to next episode"
     } else {
         "q: stop & return to results"
     };
     let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[6]);
+
+    // Resume prompt overlay
+    if app.show_resume_prompt {
+        let area = frame.area();
+        let popup_width = 50.min(area.width.saturating_sub(4));
+        let popup_height = 7;
+        let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+        let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        // Clear area behind popup
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let resume_text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("Resume from {:.0}%?", app.resume_progress),
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("r", Style::default().fg(Color::Cyan)),
+                Span::raw(" - Resume  |  "),
+                Span::styled("s", Style::default().fg(Color::Cyan)),
+                Span::raw(" - Start over"),
+            ]),
+        ];
+
+        let popup = Paragraph::new(resume_text)
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan))
+                    .title("Resume Playback"),
+            );
+        frame.render_widget(popup, popup_area);
+    }
 }
 
 fn draw_doctor(frame: &mut Frame, app: &App) {
