@@ -21,7 +21,7 @@ use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::doctor::{self, CheckResult};
-use crate::extensions::{ExtensionManager, MediaInfo, PlaybackEvent};
+use crate::extensions::{parse_episode_info, ExtensionManager, MediaInfo, PlaybackEvent};
 use crate::opensubtitles::OpenSubtitlesClient;
 use crate::prowlarr::ProwlarrClient;
 use crate::streaming::{self, StreamingSession};
@@ -56,7 +56,7 @@ fn restore_terminal() {
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
-pub async fn run(config: Config, ext_manager: ExtensionManager) -> io::Result<()> {
+pub async fn run(config: Config, ext_manager: ExtensionManager, open_settings: bool) -> io::Result<()> {
     // Set up panic hook to restore terminal
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -73,10 +73,17 @@ pub async fn run(config: Config, ext_manager: ExtensionManager) -> io::Result<()
 
     // Create app and channels
     let mut app = App::new();
+
+    // Open settings immediately if this is a new config
+    if open_settings {
+        app.view = View::Settings;
+    }
+
     let (tx, mut rx) = mpsc::channel::<UiMessage>(32);
 
-    // Main loop
-    let result = run_app(&mut terminal, &mut app, &config, &ext_manager, tx, &mut rx).await;
+    // Main loop - config is mutable for settings editing
+    let mut config = config;
+    let result = run_app(&mut terminal, &mut app, &mut config, &ext_manager, tx, &mut rx).await;
 
     // Shutdown extensions
     ext_manager.shutdown();
@@ -96,7 +103,7 @@ pub async fn run(config: Config, ext_manager: ExtensionManager) -> io::Result<()
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    config: &Config,
+    config: &mut Config,
     ext_manager: &ExtensionManager,
     tx: mpsc::Sender<UiMessage>,
     rx: &mut mpsc::Receiver<UiMessage>,
@@ -181,6 +188,7 @@ async fn run_app(
                         app.view = View::Streaming;
 
                         // Notify extensions
+                        let (season, episode) = parse_episode_info(&file.name);
                         ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
                             title: app.current_title.clone(),
                             file_name: file.name.clone(),
@@ -189,6 +197,8 @@ async fn run_app(
                             year: app.current_year.map(|y| y as u32),
                             media_type: app.current_media_type.clone(),
                             poster_url: app.current_poster_url.clone(),
+                            season,
+                            episode,
                         }));
 
                         // Launch player task for single file
@@ -324,6 +334,7 @@ async fn run_app(
                     app.streaming_state = StreamingState::Ready { stream_url };
 
                     // Notify extensions
+                    let (season, episode) = parse_episode_info(&file_name);
                     ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
                         title: app.current_title.clone(),
                         file_name,
@@ -332,6 +343,8 @@ async fn run_app(
                         year: app.current_year.map(|y| y as u32),
                         media_type: app.current_media_type.clone(),
                         poster_url: app.current_poster_url.clone(),
+                        season,
+                        episode,
                     }));
                 }
                 UiMessage::StreamError(e) => {
@@ -344,6 +357,7 @@ async fn run_app(
                 UiMessage::PlayerExited => {
                     // Notify extensions before cleanup
                     let watched_percent = app.download_progress.progress_percent;
+                    let (season, episode) = parse_episode_info(&app.current_file);
                     ext_manager.broadcast(PlaybackEvent::Stopped {
                         media: MediaInfo {
                             title: app.current_title.clone(),
@@ -353,6 +367,8 @@ async fn run_app(
                             year: app.current_year.map(|y| y as u32),
                             media_type: app.current_media_type.clone(),
                             poster_url: app.current_poster_url.clone(),
+                            season,
+                            episode,
                         },
                         watched_percent,
                     });
@@ -738,6 +754,7 @@ async fn run_app(
                                 app.view = View::Streaming;
 
                                 // Notify extensions
+                                let (season, episode) = parse_episode_info(&file.name);
                                 ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
                                     title: app.current_title.clone(),
                                     file_name: file.name.clone(),
@@ -746,6 +763,8 @@ async fn run_app(
                                     year: app.current_year.map(|y| y as u32),
                                     media_type: app.current_media_type.clone(),
                                     poster_url: app.current_poster_url.clone(),
+                                    season,
+                                    episode,
                                 }));
 
                                 // Launch player task
@@ -918,18 +937,89 @@ async fn run_app(
                         _ => {}
                     },
 
-                    View::Settings => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            app.view = View::Search;
+                    View::Settings => {
+                        if app.settings_editing {
+                            // Editing mode - handle text input
+                            match key.code {
+                                KeyCode::Esc => {
+                                    // Cancel edit
+                                    app.settings_editing = false;
+                                    app.settings_edit_buffer.clear();
+                                }
+                                KeyCode::Enter => {
+                                    // Save edit to config
+                                    apply_settings_edit(app, config);
+                                    app.settings_editing = false;
+                                    app.settings_edit_buffer.clear();
+                                    app.settings_dirty = true;
+                                }
+                                KeyCode::Backspace => {
+                                    app.settings_edit_buffer.pop();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.settings_edit_buffer.push(c);
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            // Navigation mode
+                            match key.code {
+                                KeyCode::Char('q') | KeyCode::Esc => {
+                                    if app.settings_dirty {
+                                        // Save config before exiting
+                                        if let Err(e) = config.save() {
+                                            error!("Failed to save config: {}", e);
+                                        } else {
+                                            info!("Config saved");
+                                        }
+                                        app.settings_dirty = false;
+                                    }
+                                    app.view = View::Search;
+                                    app.settings_field_index = 0;
+                                }
+                                KeyCode::Left | KeyCode::Char('h') => {
+                                    // Switch sections
+                                    app.settings_section = app.settings_section.prev();
+                                    app.settings_field_index = 0;
+                                }
+                                KeyCode::Right | KeyCode::Char('l') => {
+                                    // Switch sections
+                                    app.settings_section = app.settings_section.next();
+                                    app.settings_field_index = 0;
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    // Move between fields
+                                    app.settings_prev_field();
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    // Move between fields
+                                    app.settings_next_field();
+                                }
+                                KeyCode::Enter => {
+                                    // Start editing current field
+                                    let current_value = get_settings_field_value(app, config);
+                                    app.settings_edit_buffer = current_value;
+                                    app.settings_editing = true;
+                                }
+                                KeyCode::Char(' ') => {
+                                    // Toggle boolean fields
+                                    if toggle_settings_bool(app, config) {
+                                        app.settings_dirty = true;
+                                    }
+                                }
+                                KeyCode::Char('s') => {
+                                    // Save now
+                                    if let Err(e) = config.save() {
+                                        error!("Failed to save config: {}", e);
+                                    } else {
+                                        info!("Config saved");
+                                        app.settings_dirty = false;
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.settings_section = app.settings_section.prev();
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.settings_section = app.settings_section.next();
-                        }
-                        _ => {}
-                    },
+                    }
                 }
             }
         }
@@ -944,4 +1034,132 @@ async fn run_app(
     }
 
     Ok(())
+}
+
+/// Get the current value of the selected settings field
+fn get_settings_field_value(app: &App, config: &Config) -> String {
+    match app.settings_section {
+        SettingsSection::Prowlarr => match app.settings_field_index {
+            0 => config.prowlarr.url.clone(),
+            1 => config.prowlarr.apikey.clone(),
+            _ => String::new(),
+        },
+        SettingsSection::Tmdb => match app.settings_field_index {
+            0 => config.tmdb.as_ref().map(|t| t.apikey.clone()).unwrap_or_default(),
+            _ => String::new(),
+        },
+        SettingsSection::Player => match app.settings_field_index {
+            0 => config.player.command.clone(),
+            1 => config.player.args.join(" "),
+            _ => String::new(),
+        },
+        SettingsSection::Subtitles => match app.settings_field_index {
+            0 => config.subtitles.enabled.to_string(),
+            1 => config.subtitles.language.clone(),
+            2 => config.subtitles.opensubtitles_api_key.clone().unwrap_or_default(),
+            _ => String::new(),
+        },
+        SettingsSection::Discord => match app.settings_field_index {
+            0 => config.extensions.discord.enabled.to_string(),
+            1 => config.extensions.discord.app_id.clone().unwrap_or_default(),
+            _ => String::new(),
+        },
+        SettingsSection::Trakt => match app.settings_field_index {
+            0 => config.extensions.trakt.enabled.to_string(),
+            1 => config.extensions.trakt.client_id.clone().unwrap_or_default(),
+            2 => config.extensions.trakt.access_token.clone().unwrap_or_default(),
+            _ => String::new(),
+        },
+    }
+}
+
+/// Apply the edit buffer to the config field
+fn apply_settings_edit(app: &App, config: &mut Config) {
+    let value = app.settings_edit_buffer.trim().to_string();
+
+    match app.settings_section {
+        SettingsSection::Prowlarr => match app.settings_field_index {
+            0 => config.prowlarr.url = value,
+            1 => config.prowlarr.apikey = value,
+            _ => {}
+        },
+        SettingsSection::Tmdb => if app.settings_field_index == 0 {
+            if value.is_empty() {
+                config.tmdb = None;
+            } else {
+                config.tmdb = Some(crate::config::TmdbConfig { apikey: value });
+            }
+        },
+        SettingsSection::Player => match app.settings_field_index {
+            0 => config.player.command = value,
+            1 => {
+                config.player.args = if value.is_empty() {
+                    Vec::new()
+                } else {
+                    value.split_whitespace().map(String::from).collect()
+                };
+            }
+            _ => {}
+        },
+        SettingsSection::Subtitles => match app.settings_field_index {
+            0 => config.subtitles.enabled = value.to_lowercase() == "true",
+            1 => config.subtitles.language = value,
+            2 => {
+                config.subtitles.opensubtitles_api_key = if value.is_empty() {
+                    None
+                } else {
+                    Some(value)
+                };
+            }
+            _ => {}
+        },
+        SettingsSection::Discord => match app.settings_field_index {
+            0 => config.extensions.discord.enabled = value.to_lowercase() == "true",
+            1 => {
+                config.extensions.discord.app_id = if value.is_empty() {
+                    None
+                } else {
+                    Some(value)
+                };
+            }
+            _ => {}
+        },
+        SettingsSection::Trakt => match app.settings_field_index {
+            0 => config.extensions.trakt.enabled = value.to_lowercase() == "true",
+            1 => {
+                config.extensions.trakt.client_id = if value.is_empty() {
+                    None
+                } else {
+                    Some(value)
+                };
+            }
+            2 => {
+                config.extensions.trakt.access_token = if value.is_empty() {
+                    None
+                } else {
+                    Some(value)
+                };
+            }
+            _ => {}
+        },
+    }
+}
+
+/// Toggle boolean fields with spacebar, returns true if a toggle happened
+fn toggle_settings_bool(app: &App, config: &mut Config) -> bool {
+    match app.settings_section {
+        SettingsSection::Subtitles if app.settings_field_index == 0 => {
+            config.subtitles.enabled = !config.subtitles.enabled;
+            true
+        }
+        SettingsSection::Discord if app.settings_field_index == 0 => {
+            config.extensions.discord.enabled = !config.extensions.discord.enabled;
+            true
+        }
+        SettingsSection::Trakt if app.settings_field_index == 0 => {
+            config.extensions.trakt.enabled = !config.extensions.trakt.enabled;
+            true
+        }
+        _ => false,
+    }
 }
