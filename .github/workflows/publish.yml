@@ -19,11 +19,12 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
       - name: Run tests
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
         run: cargo test --all-features
 
   create-release:
@@ -66,12 +67,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
       - name: Upload binaries to release
         uses: taiki-e/upload-rust-binary-action@v1
         with:
@@ -80,6 +77,8 @@ jobs:
           tar: unix
           zip: windows
         env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           DISCORD_APP_ID: ${{ secrets.DISCORD_APP_ID }}
