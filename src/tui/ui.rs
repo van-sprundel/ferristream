@@ -16,6 +16,8 @@ pub fn draw(frame: &mut Frame, app: &App, config: Option<&Config>) {
     match app.view {
         View::Search => draw_search(frame, app),
         View::Results => draw_results(frame, app),
+        View::TvSeasons => draw_tv_seasons(frame, app),
+        View::TvEpisodes => draw_tv_episodes(frame, app),
         View::FileSelection => draw_file_selection(frame, app),
         View::Streaming => draw_streaming(frame, app),
         View::Doctor => draw_doctor(frame, app),
@@ -119,8 +121,17 @@ fn draw_search(frame: &mut Frame, app: &App) {
     } else if let Some(ref err) = app.search_error {
         Paragraph::new(err.as_str()).style(Style::default().fg(Color::Red))
     } else if has_suggestions {
-        Paragraph::new("↑/↓: select | Tab: accept | Enter: search")
-            .style(Style::default().fg(Color::DarkGray))
+        // Check if selected suggestion is a TV show
+        let selected_is_tv = app
+            .suggestions
+            .get(app.selected_suggestion)
+            .is_some_and(|s| s.media_type == "tv");
+        let help_text = if selected_is_tv {
+            "↑/↓: select | Tab: accept | Enter: browse episodes"
+        } else {
+            "↑/↓: select | Tab: accept | Enter: search"
+        };
+        Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray))
     } else {
         Paragraph::new("Enter: search | s: settings | d: doctor | Esc: quit")
             .style(Style::default().fg(Color::DarkGray))
@@ -365,17 +376,43 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL).title("Stats"));
     frame.render_widget(stats, chunks[3]);
 
-    // File info
+    // File info with episode tracking
     if !app.current_file.is_empty() {
-        let file_info = Paragraph::new(&*app.current_file)
+        let episode_info = if app.available_files.len() > 1 {
+            format!(
+                "{} [{}/{}]",
+                app.current_file,
+                app.current_episode_index + 1,
+                app.available_files.len()
+            )
+        } else {
+            app.current_file.clone()
+        };
+
+        let mut file_spans = vec![Span::raw(episode_info)];
+
+        // Show next episode indicator if available
+        if let Some(next) = app.next_episode() {
+            let next_name = next.name.rsplit('/').next().unwrap_or(&next.name);
+            file_spans.push(Span::styled(
+                format!("  → Next: {}", next_name),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        let file_info = Paragraph::new(Line::from(file_spans))
             .style(Style::default().fg(Color::White))
             .block(Block::default().borders(Borders::ALL).title("File"));
         frame.render_widget(file_info, chunks[4]);
     }
 
     // Help
-    let help =
-        Paragraph::new("q: stop & return to results").style(Style::default().fg(Color::DarkGray));
+    let help_text = if app.has_next_episode() {
+        "q: stop & return | n: skip to next episode"
+    } else {
+        "q: stop & return to results"
+    };
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[6]);
 }
 
@@ -439,6 +476,142 @@ fn draw_doctor(frame: &mut Frame, app: &App) {
 
     // Help
     let help = Paragraph::new("r: run checks | q/Esc: back to search")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[2]);
+}
+
+fn draw_tv_seasons(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(0),    // Season list
+            Constraint::Length(2), // Help
+        ])
+        .split(frame.area());
+
+    // Title with show name
+    let title = Paragraph::new(format!("{} - Seasons", app.current_title))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default());
+    frame.render_widget(title, chunks[0]);
+
+    // Season list
+    if app.is_fetching_tv_details {
+        let loading =
+            Paragraph::new("Loading seasons...").style(Style::default().fg(Color::Yellow));
+        frame.render_widget(loading, chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app
+            .tv_seasons
+            .iter()
+            .enumerate()
+            .map(|(idx, season)| {
+                let style = if idx == app.selected_season_index {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                let year = season
+                    .air_date
+                    .as_ref()
+                    .and_then(|d| d.split('-').next())
+                    .map(|y| format!(" ({})", y))
+                    .unwrap_or_default();
+
+                let text = format!(
+                    "{}{} - {} episodes",
+                    season.name, year, season.episode_count
+                );
+                ListItem::new(text).style(style)
+            })
+            .collect();
+
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Seasons"));
+        frame.render_widget(list, chunks[1]);
+    }
+
+    // Help
+    let help = Paragraph::new("Enter: view episodes | ↑/↓: navigate | q: back to search")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[2]);
+}
+
+fn draw_tv_episodes(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(0),    // Episode list
+            Constraint::Length(2), // Help
+        ])
+        .split(frame.area());
+
+    // Title with show and season name
+    let season_name = app
+        .selected_season()
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| "Episodes".to_string());
+    let title = Paragraph::new(format!("{} - {}", app.current_title, season_name))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default());
+    frame.render_widget(title, chunks[0]);
+
+    // Episode list
+    if app.is_fetching_tv_details {
+        let loading =
+            Paragraph::new("Loading episodes...").style(Style::default().fg(Color::Yellow));
+        frame.render_widget(loading, chunks[1]);
+    } else if app.is_searching {
+        let loading =
+            Paragraph::new("Searching for episode...").style(Style::default().fg(Color::Yellow));
+        frame.render_widget(loading, chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app
+            .tv_episodes
+            .iter()
+            .enumerate()
+            .map(|(idx, ep)| {
+                let style = if idx == app.selected_episode_index {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                let runtime = ep
+                    .runtime
+                    .map(|r| format!(" ({}m)", r))
+                    .unwrap_or_default();
+
+                let text = format!("{}{}", ep.display_title(), runtime);
+                ListItem::new(text).style(style)
+            })
+            .collect();
+
+        let list =
+            List::new(items).block(Block::default().borders(Borders::ALL).title("Episodes"));
+        frame.render_widget(list, chunks[1]);
+    }
+
+    // Help
+    let help = Paragraph::new("Enter: search & stream | ↑/↓: navigate | q: back to seasons")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[2]);
 }

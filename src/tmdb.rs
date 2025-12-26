@@ -58,6 +58,72 @@ struct SearchResponse {
     results: Vec<SearchResult>,
 }
 
+/// TV show details including seasons
+#[derive(Debug, Clone, Deserialize)]
+pub struct TvDetails {
+    pub id: u64,
+    pub name: String,
+    pub overview: Option<String>,
+    pub first_air_date: Option<String>,
+    pub poster_path: Option<String>,
+    pub number_of_seasons: u32,
+    pub number_of_episodes: u32,
+    pub seasons: Vec<SeasonSummary>,
+}
+
+/// Summary of a season (from TV details)
+#[derive(Debug, Clone, Deserialize)]
+pub struct SeasonSummary {
+    pub id: u64,
+    pub name: String,
+    pub season_number: u32,
+    pub episode_count: u32,
+    pub air_date: Option<String>,
+    pub poster_path: Option<String>,
+    pub overview: Option<String>,
+}
+
+/// Full season details with episodes
+#[derive(Debug, Clone, Deserialize)]
+pub struct SeasonDetails {
+    pub id: u64,
+    pub name: String,
+    pub season_number: u32,
+    pub air_date: Option<String>,
+    pub overview: Option<String>,
+    pub poster_path: Option<String>,
+    pub episodes: Vec<Episode>,
+}
+
+/// Episode details
+#[derive(Debug, Clone, Deserialize)]
+pub struct Episode {
+    pub id: u64,
+    pub name: String,
+    pub episode_number: u32,
+    pub season_number: u32,
+    pub air_date: Option<String>,
+    pub overview: Option<String>,
+    pub still_path: Option<String>,
+    pub runtime: Option<u32>,
+    pub vote_average: Option<f64>,
+}
+
+impl Episode {
+    /// Format as "S01E02 - Episode Name"
+    pub fn display_title(&self) -> String {
+        format!(
+            "S{:02}E{:02} - {}",
+            self.season_number, self.episode_number, self.name
+        )
+    }
+
+    /// Format for Prowlarr search query
+    pub fn search_query(&self, show_name: &str) -> String {
+        format!("{} S{:02}E{:02}", show_name, self.season_number, self.episode_number)
+    }
+}
+
 pub struct TmdbClient {
     client: Client,
     api_key: String,
@@ -142,6 +208,38 @@ impl TmdbClient {
         let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
 
         Ok(response.results)
+    }
+
+    /// Get TV show details including list of seasons
+    pub async fn get_tv_details(&self, tv_id: u64) -> Result<TvDetails, TmdbError> {
+        let url = format!(
+            "{}/3/tv/{}?api_key={}",
+            self.base_url, tv_id, self.api_key
+        );
+
+        debug!(tv_id, "fetching TV details");
+
+        let response: TvDetails = self.client.get(&url).send().await?.json().await?;
+
+        Ok(response)
+    }
+
+    /// Get season details with all episodes
+    pub async fn get_season_details(
+        &self,
+        tv_id: u64,
+        season_number: u32,
+    ) -> Result<SeasonDetails, TmdbError> {
+        let url = format!(
+            "{}/3/tv/{}/season/{}?api_key={}",
+            self.base_url, tv_id, season_number, self.api_key
+        );
+
+        debug!(tv_id, season_number, "fetching season details");
+
+        let response: SeasonDetails = self.client.get(&url).send().await?.json().await?;
+
+        Ok(response)
     }
 }
 

@@ -497,6 +497,38 @@ impl StreamingSession {
         self.http_addr
     }
 
+    /// Prioritize downloading a specific file by making a range request
+    /// This triggers librqbit to prioritize pieces for that file
+    pub async fn prioritize_file(&self, torrent_id: usize, file_idx: usize) -> Result<(), StreamError> {
+        let url = format!(
+            "http://{}/torrents/{}/stream/{}",
+            self.http_addr, torrent_id, file_idx
+        );
+
+        // Make a small range request to trigger prioritization
+        let result = self
+            .http_client
+            .get(&url)
+            .header("Range", "bytes=0-1024")
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 206 => {
+                info!(torrent_id, file_idx, "file prioritized for pre-download");
+                Ok(())
+            }
+            Ok(resp) => {
+                debug!(status = %resp.status(), "prioritize request returned non-success");
+                Ok(()) // Don't fail on this, it's best-effort
+            }
+            Err(e) => {
+                debug!(error = %e, "failed to prioritize file");
+                Ok(()) // Don't fail on this either
+            }
+        }
+    }
+
     /// Get download stats for a torrent
     pub async fn get_stats(&self, torrent_id: usize) -> Option<TorrentStats> {
         let url = format!("http://{}/torrents/{}/stats/v1", self.http_addr, torrent_id);
@@ -662,6 +694,41 @@ pub struct VideoFile {
     pub stream_url: String,
 }
 
+impl VideoFile {
+    /// Extract season and episode numbers from filename for sorting
+    pub fn episode_sort_key(&self) -> (u32, u32) {
+        use regex::Regex;
+
+        // S01E02 format
+        let sxex_re = Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap();
+        if let Some(caps) = sxex_re.captures(&self.name) {
+            if let (Some(s), Some(e)) = (caps.get(1), caps.get(2)) {
+                if let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
+                    return (season, episode);
+                }
+            }
+        }
+
+        // 1x02 format
+        let x_re = Regex::new(r"(?i)(\d{1,2})x(\d{1,3})").unwrap();
+        if let Some(caps) = x_re.captures(&self.name) {
+            if let (Some(s), Some(e)) = (caps.get(1), caps.get(2)) {
+                if let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
+                    return (season, episode);
+                }
+            }
+        }
+
+        // If no episode pattern found, use large values to sort at end
+        (u32::MAX, u32::MAX)
+    }
+}
+
+/// Sort video files by episode number (for season packs)
+pub fn sort_episodes(files: &mut [VideoFile]) {
+    files.sort_by_key(|f| f.episode_sort_key());
+}
+
 #[derive(Debug, Clone)]
 pub struct TorrentInfo {
     pub id: usize,
@@ -810,5 +877,73 @@ mod tests {
         assert!(!is_subtitle_file("movie.mkv"));
         assert!(!is_subtitle_file("movie.txt"));
         assert!(!is_subtitle_file("movie.nfo"));
+    }
+
+    #[test]
+    fn test_episode_sort_key() {
+        let file1 = VideoFile {
+            name: "Show.S01E01.720p.mkv".to_string(),
+            file_idx: 0,
+            size: 1000,
+            stream_url: String::new(),
+        };
+        let file2 = VideoFile {
+            name: "Show.S01E02.720p.mkv".to_string(),
+            file_idx: 1,
+            size: 1000,
+            stream_url: String::new(),
+        };
+        let file10 = VideoFile {
+            name: "Show.S01E10.720p.mkv".to_string(),
+            file_idx: 2,
+            size: 1000,
+            stream_url: String::new(),
+        };
+        let file_s2 = VideoFile {
+            name: "Show.S02E01.720p.mkv".to_string(),
+            file_idx: 3,
+            size: 1000,
+            stream_url: String::new(),
+        };
+
+        assert_eq!(file1.episode_sort_key(), (1, 1));
+        assert_eq!(file2.episode_sort_key(), (1, 2));
+        assert_eq!(file10.episode_sort_key(), (1, 10));
+        assert_eq!(file_s2.episode_sort_key(), (2, 1));
+
+        // Verify sorting order
+        assert!(file1.episode_sort_key() < file2.episode_sort_key());
+        assert!(file2.episode_sort_key() < file10.episode_sort_key());
+        assert!(file10.episode_sort_key() < file_s2.episode_sort_key());
+    }
+
+    #[test]
+    fn test_sort_episodes() {
+        let mut files = vec![
+            VideoFile {
+                name: "Show.S01E03.mkv".to_string(),
+                file_idx: 0,
+                size: 1000,
+                stream_url: String::new(),
+            },
+            VideoFile {
+                name: "Show.S01E01.mkv".to_string(),
+                file_idx: 1,
+                size: 1000,
+                stream_url: String::new(),
+            },
+            VideoFile {
+                name: "Show.S01E02.mkv".to_string(),
+                file_idx: 2,
+                size: 1000,
+                stream_url: String::new(),
+            },
+        ];
+
+        sort_episodes(&mut files);
+
+        assert!(files[0].name.contains("E01"));
+        assert!(files[1].name.contains("E02"));
+        assert!(files[2].name.contains("E03"));
     }
 }
