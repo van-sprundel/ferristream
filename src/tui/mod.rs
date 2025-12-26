@@ -24,7 +24,7 @@ use crate::doctor::{self, CheckResult};
 use crate::extensions::{parse_episode_info, ExtensionManager, MediaInfo, PlaybackEvent};
 use crate::opensubtitles::OpenSubtitlesClient;
 use crate::prowlarr::ProwlarrClient;
-use crate::streaming::{self, StreamingSession};
+use crate::streaming::{self, sort_episodes, StreamingSession};
 use crate::tmdb::{parse_torrent_title, TmdbClient};
 use crate::torznab::{TorrentResult, TorznabClient};
 
@@ -36,6 +36,10 @@ pub enum UiMessage {
     SearchError(String),
     TmdbInfo(TmdbMetadata),
     Suggestions(Vec<TmdbSuggestion>),
+    /// TV show details with seasons
+    TvDetailsLoaded(crate::tmdb::TvDetails),
+    /// Season episodes loaded
+    SeasonEpisodesLoaded(Vec<crate::tmdb::Episode>),
     /// Torrent metadata received - may have multiple video files
     TorrentMetadata {
         torrent_info: crate::streaming::TorrentInfo,
@@ -152,6 +156,25 @@ async fn run_app(
                     app.selected_suggestion = 0;
                     app.is_fetching_suggestions = false;
                 }
+                UiMessage::TvDetailsLoaded(details) => {
+                    // Filter out season 0 (specials) for cleaner UI
+                    app.tv_seasons = details
+                        .seasons
+                        .iter()
+                        .filter(|s| s.season_number > 0)
+                        .cloned()
+                        .collect();
+                    app.tv_details = Some(details);
+                    app.selected_season_index = 0;
+                    app.is_fetching_tv_details = false;
+                    app.view = View::TvSeasons;
+                }
+                UiMessage::SeasonEpisodesLoaded(episodes) => {
+                    app.tv_episodes = episodes;
+                    app.selected_episode_index = 0;
+                    app.is_fetching_tv_details = false;
+                    app.view = View::TvEpisodes;
+                }
                 UiMessage::DoctorComplete(results) => {
                     app.doctor_results = results;
                     app.is_checking = false;
@@ -170,12 +193,13 @@ async fn run_app(
                             files = torrent_info.video_files.len(),
                             "multiple video files, showing selection"
                         );
-                        // Sort by name for easier navigation (episodes usually have similar naming)
+                        // Sort by episode number for season packs
                         let mut sorted_files = torrent_info.video_files.clone();
-                        sorted_files
-                            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        sort_episodes(&mut sorted_files);
                         app.available_files = sorted_files;
                         app.selected_file_index = 0;
+                        app.current_episode_index = 0;
+                        app.next_episode_ready = false;
                         app.view = View::FileSelection;
                         app.streaming_state = StreamingState::FetchingMetadata;
                     } else if let Some(file) = torrent_info.video_files.first().cloned() {
@@ -373,14 +397,149 @@ async fn run_app(
                         watched_percent,
                     });
 
-                    // Cleanup and go back to results
-                    if let Some(session) = streaming_session.take() {
-                        session.cleanup().await;
+                    // Check if we should auto-play next episode
+                    let has_next = app.has_next_episode();
+                    let should_auto_play = app.auto_play_next && has_next && app.available_files.len() > 1;
+
+                    if should_auto_play {
+                        // Advance to next episode
+                        if let Some(next_file) = app.advance_to_next_episode().cloned() {
+                            info!(file = %next_file.name, "auto-playing next episode");
+                            app.current_file = next_file.name.clone();
+                            app.streaming_state = StreamingState::Ready {
+                                stream_url: next_file.stream_url.clone(),
+                            };
+
+                            // Notify extensions about new episode
+                            let (season, episode) = parse_episode_info(&next_file.name);
+                            ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
+                                title: app.current_title.clone(),
+                                file_name: next_file.name.clone(),
+                                total_bytes: next_file.size,
+                                tmdb_id: app.current_tmdb_id,
+                                year: app.current_year.map(|y| y as u32),
+                                media_type: app.current_media_type.clone(),
+                                poster_url: app.current_poster_url.clone(),
+                                season,
+                                episode,
+                            }));
+
+                            // Pre-download the episode after this one
+                            if let (Some(after_next), Some(session), Some(torrent_info)) = (
+                                app.next_episode(),
+                                streaming_session.as_ref(),
+                                pending_torrent_info.as_ref(),
+                            ) {
+                                let after_next_idx = after_next.file_idx;
+                                let session_clone = session.clone();
+                                let torrent_id = torrent_info.id;
+                                info!(next_file = %after_next.name, "pre-downloading next episode");
+                                tokio::spawn(async move {
+                                    let _ = session_clone.prioritize_file(torrent_id, after_next_idx).await;
+                                });
+                            }
+
+                            // Launch player for next episode
+                            if let (Some(session), Some(torrent_info)) = (
+                                streaming_session.clone(),
+                                pending_torrent_info.as_ref(),
+                            ) {
+                                let tx = tx.clone();
+                                let player_command = config.player.command.clone();
+                                let player_args = config.player.args.clone();
+                                let subtitles_enabled = config.subtitles.enabled;
+                                let preferred_language = config.subtitles.language.clone();
+                                let opensubtitles_key = config.subtitles.opensubtitles_api_key.clone();
+                                let tmdb_id = app.current_tmdb_id;
+                                let subtitle_files = torrent_info.subtitle_files.clone();
+                                let stream_url = next_file.stream_url.clone();
+                                let torrent_id = torrent_info.id;
+                                let cancel_token = streaming_cancel.clone().unwrap_or_default();
+
+                                tokio::spawn(async move {
+                                    // Progress polling
+                                    let progress_tx = tx.clone();
+                                    let progress_session = session.clone();
+                                    let progress_handle = tokio::spawn(async move {
+                                        loop {
+                                            tokio::time::sleep(Duration::from_millis(500)).await;
+                                            if let Some(stats) = progress_session.get_stats(torrent_id).await {
+                                                let progress = DownloadProgress {
+                                                    downloaded_bytes: stats.downloaded_bytes,
+                                                    total_bytes: stats.total_bytes,
+                                                    download_speed: stats.download_speed,
+                                                    upload_speed: stats.upload_speed,
+                                                    peers_connected: stats.peers_connected,
+                                                    progress_percent: if stats.total_bytes > 0 {
+                                                        (stats.downloaded_bytes as f64 / stats.total_bytes as f64) * 100.0
+                                                    } else {
+                                                        0.0
+                                                    },
+                                                };
+                                                if progress_tx.send(UiMessage::ProgressUpdate(progress)).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    });
+
+                                    // Find subtitle
+                                    let subtitle_url = if subtitles_enabled {
+                                        subtitle_files
+                                            .iter()
+                                            .find(|s| s.language.as_deref() == Some(&preferred_language))
+                                            .or_else(|| subtitle_files.first())
+                                            .map(|s| s.stream_url.clone())
+                                    } else {
+                                        None
+                                    };
+
+                                    // Launch player
+                                    match streaming::launch_player(
+                                        &player_command,
+                                        &player_args,
+                                        &stream_url,
+                                        subtitle_url.as_deref(),
+                                    ).await {
+                                        Ok(mut child) => {
+                                            tokio::select! {
+                                                _ = child.wait() => {
+                                                    info!("player exited normally");
+                                                }
+                                                _ = cancel_token.cancelled() => {
+                                                    info!("cancellation requested, killing player");
+                                                    let _ = child.kill().await;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(error = %e, "failed to launch player");
+                                        }
+                                    }
+
+                                    progress_handle.abort();
+                                    let _ = tx.send(UiMessage::PlayerExited).await;
+                                });
+                            }
+                        }
+                    } else if has_next && app.available_files.len() > 1 {
+                        // Has next but auto-play disabled - go back to file selection
+                        info!("playback ended, returning to file selection");
+                        app.selected_file_index = app.current_episode_index + 1;
+                        app.view = View::FileSelection;
+                        app.streaming_state = StreamingState::FetchingMetadata;
+                    } else {
+                        // No next episode or single file - cleanup and go back to results
+                        if let Some(session) = streaming_session.take() {
+                            session.cleanup().await;
+                        }
+                        pending_torrent_info = None;
+                        app.available_files.clear();
+                        app.view = View::Results;
+                        app.streaming_state = StreamingState::Connecting;
+                        app.is_streaming = false;
+                        info!("streaming ended, ready for next");
                     }
-                    app.view = View::Results;
-                    app.streaming_state = StreamingState::Connecting;
-                    app.is_streaming = false;
-                    info!("streaming ended, ready for next");
                 }
             }
         }
@@ -402,12 +561,42 @@ async fn run_app(
                             app.search_input.clear();
                         }
                         KeyCode::Enter if !app.search_input.is_empty() && !app.is_searching => {
-                            // Start search
-                            info!(query = %app.search_input, "starting search");
-                            app.is_searching = true;
-                            app.search_error = None;
-                            app.tmdb_info = None;
-                            let query = app.search_input.clone();
+                            // Check if there's a selected TV suggestion - if so, browse episodes
+                            let selected_tv = app
+                                .suggestions
+                                .get(app.selected_suggestion)
+                                .filter(|s| s.media_type == "tv")
+                                .cloned();
+
+                            if let Some(suggestion) = selected_tv {
+                                // TV show selected - go to episode browser
+                                let tv_id = suggestion.id;
+                                let tv_title = suggestion.title.clone();
+                                let tx = tx.clone();
+                                let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+
+                                app.current_title = tv_title;
+                                app.current_tmdb_id = Some(tv_id);
+                                app.current_media_type = Some("tv".to_string());
+                                app.is_fetching_tv_details = true;
+                                app.suggestions.clear();
+                                app.search_input.clear();
+
+                                info!(tv_id, "fetching TV show details");
+                                tokio::spawn(async move {
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
+                                        if let Ok(details) = client.get_tv_details(tv_id).await {
+                                            let _ = tx.send(UiMessage::TvDetailsLoaded(details)).await;
+                                        }
+                                    }
+                                });
+                            } else {
+                                // Movie or no suggestion - do torrent search
+                                info!(query = %app.search_input, "starting search");
+                                app.is_searching = true;
+                                app.search_error = None;
+                                app.tmdb_info = None;
+                                let query = app.search_input.clone();
                             let tx = tx.clone();
                             let prowlarr_url = config.prowlarr.url.clone();
                             let prowlarr_apikey = config.prowlarr.apikey.clone();
@@ -514,6 +703,7 @@ async fn run_app(
                                     let _ = tx.send(UiMessage::SearchComplete(streamable)).await;
                                 }
                             });
+                            }
                         }
                         KeyCode::Char('d') if app.search_input.is_empty() && !app.is_searching => {
                             // Open doctor view and run checks immediately
@@ -568,6 +758,7 @@ async fn run_app(
                                                 .into_iter()
                                                 .take(5)
                                                 .map(|r| TmdbSuggestion {
+                                                    id: r.id,
                                                     title: r.display_title().to_string(),
                                                     year: r.year(),
                                                     media_type: r.media_type.unwrap_or_default(),
@@ -599,6 +790,7 @@ async fn run_app(
                                                 .into_iter()
                                                 .take(5)
                                                 .map(|r| TmdbSuggestion {
+                                                    id: r.id,
                                                     title: r.display_title().to_string(),
                                                     year: r.year(),
                                                     media_type: r.media_type.unwrap_or_default(),
@@ -606,6 +798,111 @@ async fn run_app(
                                                 .collect();
                                             let _ =
                                                 tx.send(UiMessage::Suggestions(suggestions)).await;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        _ => {}
+                    },
+
+                    View::TvSeasons => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            app.view = View::Search;
+                            app.tv_details = None;
+                            app.tv_seasons.clear();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.select_previous_season();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.select_next_season();
+                        }
+                        KeyCode::Enter if !app.is_fetching_tv_details => {
+                            // Fetch episodes for selected season
+                            if let (Some(tv_id), Some(season)) = (app.current_tmdb_id, app.selected_season()) {
+                                let season_number = season.season_number;
+                                let tx = tx.clone();
+                                let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+                                app.is_fetching_tv_details = true;
+
+                                tokio::spawn(async move {
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
+                                        if let Ok(details) = client.get_season_details(tv_id, season_number).await {
+                                            let _ = tx.send(UiMessage::SeasonEpisodesLoaded(details.episodes)).await;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        _ => {}
+                    },
+
+                    View::TvEpisodes => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            if app.is_searching {
+                                // Cancel search and stay in episodes view
+                                app.is_searching = false;
+                                app.search_error = None;
+                            } else {
+                                // Go back to seasons
+                                app.view = View::TvSeasons;
+                                app.tv_episodes.clear();
+                            }
+                        }
+                        KeyCode::Up | KeyCode::Char('k') if !app.is_searching => {
+                            app.select_previous_episode();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') if !app.is_searching => {
+                            app.select_next_episode();
+                        }
+                        KeyCode::Enter if !app.is_searching => {
+                            // Search for this episode
+                            if let (Some(episode), Some(tv_details)) = (app.selected_tv_episode().cloned(), app.tv_details.clone()) {
+                                let query = episode.search_query(&tv_details.name);
+                                info!(query = %query, "searching for episode");
+
+                                app.is_searching = true;
+                                app.search_error = None;
+                                app.current_title = format!("{} - {}", tv_details.name, episode.display_title());
+                                app.current_year = tv_details.first_air_date.as_ref()
+                                    .and_then(|d| d.split('-').next()?.parse().ok());
+                                app.current_media_type = Some("tv".to_string());
+
+                                let tx = tx.clone();
+                                let prowlarr_url = config.prowlarr.url.clone();
+                                let prowlarr_apikey = config.prowlarr.apikey.clone();
+
+                                tokio::spawn(async move {
+                                    let prowlarr_config = crate::config::ProwlarrConfig {
+                                        url: prowlarr_url,
+                                        apikey: prowlarr_apikey,
+                                    };
+                                    let prowlarr = ProwlarrClient::new(&prowlarr_config);
+                                    let torznab = TorznabClient::new();
+
+                                    match prowlarr.get_usable_indexers().await {
+                                        Ok(indexers) => {
+                                            let mut all_results = Vec::new();
+                                            for indexer in &indexers {
+                                                if let Ok(results) = torznab
+                                                    .search(
+                                                        &prowlarr_config.url,
+                                                        &prowlarr_config.apikey,
+                                                        indexer.id,
+                                                        &indexer.name,
+                                                        &query,
+                                                        Some(VIDEO_CATEGORIES),
+                                                    )
+                                                    .await
+                                                {
+                                                    all_results.extend(results);
+                                                }
+                                            }
+                                            let _ = tx.send(UiMessage::SearchComplete(all_results)).await;
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(UiMessage::SearchError(e.to_string())).await;
                                         }
                                     }
                                 });
@@ -748,6 +1045,7 @@ async fn run_app(
                             ) {
                                 info!(file = %file.name, "user selected file");
                                 app.current_file = file.name.clone();
+                                app.current_episode_index = app.selected_file_index;
                                 app.streaming_state = StreamingState::Ready {
                                     stream_url: file.stream_url.clone(),
                                 };
@@ -766,6 +1064,23 @@ async fn run_app(
                                     season,
                                     episode,
                                 }));
+
+                                // Pre-download next episode if available
+                                if let Some(next_file) = app.next_episode() {
+                                    let next_file_idx = next_file.file_idx;
+                                    let session_clone = session.clone();
+                                    let torrent_id_clone = torrent_info.id;
+                                    info!(
+                                        next_file = %next_file.name,
+                                        "pre-downloading next episode"
+                                    );
+                                    tokio::spawn(async move {
+                                        let _ = session_clone
+                                            .prioritize_file(torrent_id_clone, next_file_idx)
+                                            .await;
+                                    });
+                                    app.next_episode_ready = true;
+                                }
 
                                 // Launch player task
                                 let tx = tx.clone();
@@ -913,9 +1228,19 @@ async fn run_app(
                             if let Some(session) = streaming_session.take() {
                                 session.cleanup().await;
                             }
+                            pending_torrent_info = None;
+                            app.available_files.clear();
                             app.view = View::Results;
                             app.streaming_state = StreamingState::Connecting;
                             app.is_streaming = false;
+                        }
+                        KeyCode::Char('n') if app.has_next_episode() => {
+                            // Skip to next episode - cancel current player
+                            if let Some(cancel) = streaming_cancel.take() {
+                                info!("user skipping to next episode");
+                                cancel.cancel();
+                            }
+                            // PlayerExited handler will auto-play next
                         }
                         _ => {}
                     },

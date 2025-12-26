@@ -1,5 +1,5 @@
 use crate::streaming::VideoFile;
-use crate::tmdb::SearchResult as TmdbResult;
+use crate::tmdb::{Episode, SearchResult as TmdbResult, SeasonSummary, TvDetails};
 use crate::torznab::TorrentResult;
 
 use crate::doctor::{CheckResult, CheckStatus};
@@ -8,6 +8,10 @@ use crate::doctor::{CheckResult, CheckStatus};
 pub enum View {
     Search,
     Results,
+    /// Browse seasons of a TV show
+    TvSeasons,
+    /// Browse episodes of a selected season
+    TvEpisodes,
     FileSelection,
     Streaming,
     Doctor,
@@ -131,6 +135,7 @@ pub struct TmdbMetadata {
 /// TMDB suggestion for autocomplete
 #[derive(Debug, Clone)]
 pub struct TmdbSuggestion {
+    pub id: u64,
     pub title: String,
     pub year: Option<u16>,
     pub media_type: String,
@@ -180,6 +185,11 @@ pub struct App {
     pub selected_file_index: usize,
     pub pending_torrent_id: Option<usize>,
 
+    // Episode tracking (for season packs / multi-episode)
+    pub current_episode_index: usize,  // Index in available_files of currently playing
+    pub next_episode_ready: bool,       // True when next episode is pre-loaded
+    pub auto_play_next: bool,           // Whether to auto-advance to next episode
+
     // Streaming
     pub streaming_state: StreamingState,
     pub current_title: String,
@@ -194,6 +204,14 @@ pub struct App {
     // Doctor
     pub doctor_results: Vec<CheckResult>,
     pub is_checking: bool,
+
+    // TV Show browsing
+    pub tv_details: Option<TvDetails>,
+    pub tv_seasons: Vec<SeasonSummary>,
+    pub selected_season_index: usize,
+    pub tv_episodes: Vec<Episode>,
+    pub selected_episode_index: usize,
+    pub is_fetching_tv_details: bool,
 
     // Settings
     pub settings_section: SettingsSection,
@@ -221,6 +239,9 @@ impl App {
             available_files: Vec::new(),
             selected_file_index: 0,
             pending_torrent_id: None,
+            current_episode_index: 0,
+            next_episode_ready: false,
+            auto_play_next: true, // Default to auto-play next episode
             streaming_state: StreamingState::Connecting,
             current_title: String::new(),
             current_file: String::new(),
@@ -232,6 +253,12 @@ impl App {
             is_streaming: false,
             doctor_results: Vec::new(),
             is_checking: false,
+            tv_details: None,
+            tv_seasons: Vec::new(),
+            selected_season_index: 0,
+            tv_episodes: Vec::new(),
+            selected_episode_index: 0,
+            is_fetching_tv_details: false,
             settings_section: SettingsSection::default(),
             settings_field_index: 0,
             settings_editing: false,
@@ -320,5 +347,61 @@ impl App {
 
     pub fn selected_video_file(&self) -> Option<&VideoFile> {
         self.available_files.get(self.selected_file_index)
+    }
+
+    /// Check if there's a next episode available
+    pub fn has_next_episode(&self) -> bool {
+        self.current_episode_index + 1 < self.available_files.len()
+    }
+
+    /// Get the next episode if available
+    pub fn next_episode(&self) -> Option<&VideoFile> {
+        self.available_files.get(self.current_episode_index + 1)
+    }
+
+    /// Advance to next episode
+    pub fn advance_to_next_episode(&mut self) -> Option<&VideoFile> {
+        if self.has_next_episode() {
+            self.current_episode_index += 1;
+            self.selected_file_index = self.current_episode_index;
+            self.next_episode_ready = false;
+            self.available_files.get(self.current_episode_index)
+        } else {
+            None
+        }
+    }
+
+    // TV Season navigation
+    pub fn select_next_season(&mut self) {
+        if !self.tv_seasons.is_empty() {
+            self.selected_season_index = (self.selected_season_index + 1).min(self.tv_seasons.len() - 1);
+        }
+    }
+
+    pub fn select_previous_season(&mut self) {
+        if self.selected_season_index > 0 {
+            self.selected_season_index -= 1;
+        }
+    }
+
+    pub fn selected_season(&self) -> Option<&SeasonSummary> {
+        self.tv_seasons.get(self.selected_season_index)
+    }
+
+    // TV Episode navigation
+    pub fn select_next_episode(&mut self) {
+        if !self.tv_episodes.is_empty() {
+            self.selected_episode_index = (self.selected_episode_index + 1).min(self.tv_episodes.len() - 1);
+        }
+    }
+
+    pub fn select_previous_episode(&mut self) {
+        if self.selected_episode_index > 0 {
+            self.selected_episode_index -= 1;
+        }
+    }
+
+    pub fn selected_tv_episode(&self) -> Option<&Episode> {
+        self.tv_episodes.get(self.selected_episode_index)
     }
 }
