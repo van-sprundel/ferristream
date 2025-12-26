@@ -3,6 +3,7 @@
 mod config;
 mod doctor;
 mod extensions;
+mod history;
 mod opensubtitles;
 mod prowlarr;
 mod streaming;

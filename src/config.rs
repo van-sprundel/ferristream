@@ -29,6 +29,8 @@ pub struct Config {
     pub extensions: ExtensionsConfig,
     #[serde(default)]
     pub subtitles: SubtitlesConfig,
+    #[serde(default)]
+    pub streaming: StreamingConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -103,6 +105,25 @@ pub struct PlayerConfig {
     pub command: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StreamingConfig {
+    /// Automatically race top N torrents and use first to connect (0 = disabled, manual selection)
+    #[serde(default = "default_auto_race")]
+    pub auto_race: u8,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            auto_race: default_auto_race(),
+        }
+    }
+}
+
+fn default_auto_race() -> u8 {
+    10 // Race top 10 torrents by default
 }
 
 impl Default for PlayerConfig {
@@ -216,6 +237,7 @@ impl Default for Config {
             storage: StorageConfig::default(),
             extensions: ExtensionsConfig::default(),
             subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
         }
     }
 }

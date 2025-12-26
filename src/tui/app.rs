@@ -6,6 +6,8 @@ use crate::doctor::{CheckResult, CheckStatus};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum View {
+    /// First-run setup wizard
+    Wizard,
     Search,
     Results,
     /// Browse seasons of a TV show
@@ -16,6 +18,52 @@ pub enum View {
     Streaming,
     Doctor,
     Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum WizardStep {
+    #[default]
+    Welcome,
+    Prowlarr,
+    Tmdb,
+    Player,
+    Done,
+}
+
+impl WizardStep {
+    pub fn next(self) -> Self {
+        match self {
+            WizardStep::Welcome => WizardStep::Prowlarr,
+            WizardStep::Prowlarr => WizardStep::Tmdb,
+            WizardStep::Tmdb => WizardStep::Player,
+            WizardStep::Player => WizardStep::Done,
+            WizardStep::Done => WizardStep::Done,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            WizardStep::Welcome => WizardStep::Welcome,
+            WizardStep::Prowlarr => WizardStep::Welcome,
+            WizardStep::Tmdb => WizardStep::Prowlarr,
+            WizardStep::Player => WizardStep::Tmdb,
+            WizardStep::Done => WizardStep::Player,
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            WizardStep::Welcome => 0,
+            WizardStep::Prowlarr => 1,
+            WizardStep::Tmdb => 2,
+            WizardStep::Player => 3,
+            WizardStep::Done => 4,
+        }
+    }
+
+    pub fn total() -> usize {
+        5
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -168,6 +216,7 @@ pub struct App {
     pub search_input: String,
     pub is_searching: bool,
     pub search_error: Option<String>,
+    pub search_id: u64, // Incremented for each search to ignore stale results
 
     // Autocomplete
     pub suggestions: Vec<TmdbSuggestion>,
@@ -219,6 +268,22 @@ pub struct App {
     pub settings_editing: bool,
     pub settings_edit_buffer: String,
     pub settings_dirty: bool, // Has unsaved changes
+
+    // Wizard
+    pub wizard_step: WizardStep,
+    pub wizard_field_index: usize,  // Which field in current step
+    pub wizard_editing: bool,
+    pub wizard_edit_buffer: String,
+
+    // Resume prompt
+    pub show_resume_prompt: bool,
+    pub resume_progress: f64,  // Progress percentage to resume from
+
+    // Playback tracking (from mpv IPC)
+    pub playback_progress: f64,  // Actual playback progress from player
+
+    // Racing status
+    pub racing_message: Option<String>,
 }
 
 impl App {
@@ -229,6 +294,7 @@ impl App {
             search_input: String::new(),
             is_searching: false,
             search_error: None,
+            search_id: 0,
             suggestions: Vec::new(),
             selected_suggestion: 0,
             is_fetching_suggestions: false,
@@ -264,6 +330,42 @@ impl App {
             settings_editing: false,
             settings_edit_buffer: String::new(),
             settings_dirty: false,
+            wizard_step: WizardStep::default(),
+            wizard_field_index: 0,
+            wizard_editing: false,
+            wizard_edit_buffer: String::new(),
+            show_resume_prompt: false,
+            resume_progress: 0.0,
+            playback_progress: 0.0,
+            racing_message: None,
+        }
+    }
+
+    pub fn wizard_field_count(&self) -> usize {
+        match self.wizard_step {
+            WizardStep::Welcome => 0,
+            WizardStep::Prowlarr => 2, // url, apikey
+            WizardStep::Tmdb => 1,     // apikey (optional)
+            WizardStep::Player => 1,   // command
+            WizardStep::Done => 0,
+        }
+    }
+
+    pub fn wizard_next_field(&mut self) {
+        let max = self.wizard_field_count();
+        if max > 0 {
+            self.wizard_field_index = (self.wizard_field_index + 1) % max;
+        }
+    }
+
+    pub fn wizard_prev_field(&mut self) {
+        let max = self.wizard_field_count();
+        if max > 0 {
+            self.wizard_field_index = if self.wizard_field_index == 0 {
+                max - 1
+            } else {
+                self.wizard_field_index - 1
+            };
         }
     }
 
