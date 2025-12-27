@@ -188,6 +188,7 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), ConfigError> {
+        self.validate()?;
         let path = Self::config_path()?;
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
