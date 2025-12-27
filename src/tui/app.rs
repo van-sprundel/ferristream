@@ -580,12 +580,11 @@ impl App {
     }
 
     pub fn select_next_item(&mut self) {
-        if let Some(row) = self.discovery_rows.get(self.selected_row_index) {
-            if !row.items.is_empty() {
+        if let Some(row) = self.discovery_rows.get(self.selected_row_index)
+            && !row.items.is_empty() {
                 self.selected_item_index =
                     (self.selected_item_index + 1).min(row.items.len() - 1);
             }
-        }
     }
 
     pub fn select_previous_item(&mut self) {

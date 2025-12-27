@@ -73,6 +73,13 @@ fn restore_terminal() {
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
+// Discovery row item count constants
+const TRENDING_ROW_ITEM_COUNT: usize = 20;
+const POPULAR_MOVIES_ITEM_COUNT: usize = 10;
+const POPULAR_TV_ITEM_COUNT: usize = 10;
+const UPCOMING_ROW_ITEM_COUNT: usize = 20;
+const FOR_YOU_ROW_ITEM_COUNT: usize = 20;
+
 fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
     let tx = tx.clone();
     let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
@@ -90,24 +97,48 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
         let mut rows = Vec::new();
 
         // Row 1: Trending
-        if let Ok(results) = client.get_trending("all", "week").await {
-            rows.push(DiscoveryRow {
-                title: "Trending This Week".to_string(),
-                items: results
-                    .into_iter()
-                    .take(20)
-                    .map(DiscoveryItem::from)
-                    .collect(),
-            });
+        match client.get_trending("all", "week").await {
+            Ok(results) => {
+                rows.push(DiscoveryRow {
+                    title: "Trending This Week".to_string(),
+                    items: results
+                        .into_iter()
+                        .take(TRENDING_ROW_ITEM_COUNT)
+                        .map(DiscoveryItem::from)
+                        .collect(),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load trending content");
+            }
         }
 
         // Row 2: Popular (combine movies + TV)
         let mut popular_items = Vec::new();
-        if let Ok(movies) = client.get_popular_movies().await {
-            popular_items.extend(movies.into_iter().take(10).map(DiscoveryItem::from));
+        match client.get_popular_movies().await {
+            Ok(movies) => {
+                popular_items.extend(
+                    movies
+                        .into_iter()
+                        .take(POPULAR_MOVIES_ITEM_COUNT)
+                        .map(DiscoveryItem::from),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load popular movies");
+            }
         }
-        if let Ok(tv) = client.get_popular_tv().await {
-            popular_items.extend(tv.into_iter().take(10).map(DiscoveryItem::from));
+        match client.get_popular_tv().await {
+            Ok(tv) => {
+                popular_items.extend(
+                    tv.into_iter()
+                        .take(POPULAR_TV_ITEM_COUNT)
+                        .map(DiscoveryItem::from),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load popular TV shows");
+            }
         }
         if !popular_items.is_empty() {
             rows.push(DiscoveryRow {
@@ -117,27 +148,37 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
         }
 
         // Row 3: Upcoming
-        if let Ok(results) = client.get_upcoming().await {
-            rows.push(DiscoveryRow {
-                title: "Upcoming Releases".to_string(),
-                items: results
-                    .into_iter()
-                    .take(20)
-                    .map(DiscoveryItem::from)
-                    .collect(),
-            });
+        match client.get_upcoming().await {
+            Ok(results) => {
+                rows.push(DiscoveryRow {
+                    title: "Upcoming Releases".to_string(),
+                    items: results
+                        .into_iter()
+                        .take(UPCOMING_ROW_ITEM_COUNT)
+                        .map(DiscoveryItem::from)
+                        .collect(),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load upcoming releases");
+            }
         }
 
         // Row 4: For You (use discover)
-        if let Ok(results) = client.discover_mixed().await {
-            rows.push(DiscoveryRow {
-                title: "For You".to_string(),
-                items: results
-                    .into_iter()
-                    .take(20)
-                    .map(DiscoveryItem::from)
-                    .collect(),
-            });
+        match client.discover_mixed().await {
+            Ok(results) => {
+                rows.push(DiscoveryRow {
+                    title: "For You".to_string(),
+                    items: results
+                        .into_iter()
+                        .take(FOR_YOU_ROW_ITEM_COUNT)
+                        .map(DiscoveryItem::from)
+                        .collect(),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load recommendations");
+            }
         }
 
         if rows.is_empty() {
@@ -149,6 +190,100 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
         } else {
             let _ = tx.send(UiMessage::DiscoveryLoaded { rows }).await;
         }
+    });
+}
+
+/// Spawn a background task to search for torrents across all indexers
+fn spawn_torrent_search(
+    search_query: String,
+    search_id: u64,
+    tx: mpsc::Sender<UiMessage>,
+    prowlarr_url: String,
+    prowlarr_apikey: String,
+) {
+    const VIDEO_CATEGORIES: &[u32] = &[2000, 5000];
+
+    tokio::spawn(async move {
+        let prowlarr_config = crate::config::ProwlarrConfig {
+            url: prowlarr_url,
+            apikey: prowlarr_apikey,
+        };
+        let prowlarr = ProwlarrClient::new(&prowlarr_config);
+        let torznab = TorznabClient::new();
+
+        let mut all_results = Vec::new();
+        let mut last_error: Option<String> = None;
+
+        match prowlarr.get_usable_indexers().await {
+            Ok(indexers) => {
+                if indexers.is_empty() {
+                    let _ = tx
+                        .send(UiMessage::SearchError(
+                            "No indexers configured in Prowlarr".to_string(),
+                        ))
+                        .await;
+                    return;
+                }
+
+                for indexer in &indexers {
+                    match torznab
+                        .search(
+                            &prowlarr_config.url,
+                            &prowlarr_config.apikey,
+                            indexer.id,
+                            &indexer.name,
+                            &search_query,
+                            Some(VIDEO_CATEGORIES),
+                        )
+                        .await
+                    {
+                        Ok(results) => {
+                            all_results.extend(results);
+                        }
+                        Err(e) => {
+                            error!(
+                                indexer = indexer.name,
+                                error = %e,
+                                "indexer search failed"
+                            );
+                            last_error = Some(format!("{}: {}", indexer.name, e));
+                        }
+                    }
+                }
+
+                if all_results.is_empty() {
+                    let error_msg =
+                        last_error.unwrap_or_else(|| "No results found".to_string());
+                    let _ = tx.send(UiMessage::SearchError(error_msg)).await;
+                } else {
+                    let _ = tx
+                        .send(UiMessage::SearchComplete {
+                            results: all_results,
+                            search_id,
+                        })
+                        .await;
+                }
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(UiMessage::SearchError(format!("Prowlarr error: {}", e)))
+                    .await;
+            }
+        }
+    });
+}
+
+/// Spawn a background task to fetch TV show details
+fn spawn_tv_details_fetch(
+    tv_id: u64,
+    tx: mpsc::Sender<UiMessage>,
+    tmdb_apikey: Option<String>,
+) {
+    tokio::spawn(async move {
+        if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref())
+            && let Ok(details) = client.get_tv_details(tv_id).await {
+                let _ = tx.send(UiMessage::TvDetailsLoaded(details)).await;
+            }
     });
 }
 
@@ -1057,19 +1192,12 @@ async fn run_app(
 
                                 // If TV show, go to season browser
                                 if item.media_type == "tv" {
-                                    let tv_id = item.id;
-                                    let tx = tx.clone();
-                                    let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
-
                                     app.is_fetching_tv_details = true;
-
-                                    tokio::spawn(async move {
-                                        if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref())
-                                            && let Ok(details) = client.get_tv_details(tv_id).await
-                                        {
-                                            let _ = tx.send(UiMessage::TvDetailsLoaded(details)).await;
-                                        }
-                                    });
+                                    spawn_tv_details_fetch(
+                                        item.id,
+                                        tx.clone(),
+                                        config.tmdb.as_ref().map(|t| t.apikey.clone()),
+                                    );
                                 } else {
                                     // Movie - start torrent search
                                     let search_query = if let Some(year) = item.year {
@@ -1083,91 +1211,13 @@ async fn run_app(
                                     app.search_input = search_query.clone();
                                     app.search_error = None;
 
-                                    let current_search_id = app.search_id;
-                                    let tx_search = tx.clone();
-                                    let prowlarr_url = config.prowlarr.url.clone();
-                                    let prowlarr_apikey = config.prowlarr.apikey.clone();
-
-                                    // Spawn torrent search task (same logic as Search view)
-                                    tokio::spawn(async move {
-                                        let prowlarr_config = crate::config::ProwlarrConfig {
-                                            url: prowlarr_url,
-                                            apikey: prowlarr_apikey,
-                                        };
-                                        let prowlarr = ProwlarrClient::new(&prowlarr_config);
-                                        let torznab = TorznabClient::new();
-
-                                        let mut all_results = Vec::new();
-                                        let mut last_error: Option<String> = None;
-
-                                        match prowlarr.get_usable_indexers().await {
-                                            Ok(indexers) => {
-                                                if indexers.is_empty() {
-                                                    let _ = tx_search
-                                                        .send(UiMessage::SearchError(
-                                                            "No indexers configured in Prowlarr"
-                                                                .to_string(),
-                                                        ))
-                                                        .await;
-                                                    return;
-                                                }
-
-                                                for indexer in &indexers {
-                                                    match torznab
-                                                        .search(
-                                                            &prowlarr_config.url,
-                                                            &prowlarr_config.apikey,
-                                                            indexer.id,
-                                                            &indexer.name,
-                                                            &search_query,
-                                                            Some(VIDEO_CATEGORIES),
-                                                        )
-                                                        .await
-                                                    {
-                                                        Ok(results) => {
-                                                            all_results.extend(results);
-                                                        }
-                                                        Err(e) => {
-                                                            error!(
-                                                                indexer = indexer.name,
-                                                                error = %e,
-                                                                "indexer search failed"
-                                                            );
-                                                            last_error = Some(format!(
-                                                                "{}: {}",
-                                                                indexer.name, e
-                                                            ));
-                                                        }
-                                                    }
-                                                }
-
-                                                if all_results.is_empty() {
-                                                    let error_msg = last_error
-                                                        .unwrap_or_else(|| {
-                                                            "No results found".to_string()
-                                                        });
-                                                    let _ = tx_search
-                                                        .send(UiMessage::SearchError(error_msg))
-                                                        .await;
-                                                } else {
-                                                    let _ = tx_search
-                                                        .send(UiMessage::SearchComplete {
-                                                            results: all_results,
-                                                            search_id: current_search_id,
-                                                        })
-                                                        .await;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                let _ = tx_search
-                                                    .send(UiMessage::SearchError(format!(
-                                                        "Prowlarr error: {}",
-                                                        e
-                                                    )))
-                                                    .await;
-                                            }
-                                        }
-                                    });
+                                    spawn_torrent_search(
+                                        search_query,
+                                        app.search_id,
+                                        tx.clone(),
+                                        config.prowlarr.url.clone(),
+                                        config.prowlarr.apikey.clone(),
+                                    );
 
                                     // Navigate to Results view
                                     app.view = View::Results;
@@ -1196,8 +1246,6 @@ async fn run_app(
                                 // TV show selected - go to episode browser
                                 let tv_id = suggestion.id;
                                 let tv_title = suggestion.title.clone();
-                                let tx = tx.clone();
-                                let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
 
                                 app.current_title = tv_title;
                                 app.current_tmdb_id = Some(tv_id);
@@ -1207,13 +1255,11 @@ async fn run_app(
                                 app.search_input.clear();
 
                                 info!(tv_id, "fetching TV show details");
-                                tokio::spawn(async move {
-                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref())
-                                        && let Ok(details) = client.get_tv_details(tv_id).await {
-                                            let _ =
-                                                tx.send(UiMessage::TvDetailsLoaded(details)).await;
-                                        }
-                                });
+                                spawn_tv_details_fetch(
+                                    tv_id,
+                                    tx.clone(),
+                                    config.tmdb.as_ref().map(|t| t.apikey.clone()),
+                                );
                             } else {
                                 // Movie or no suggestion - do torrent search
                                 info!(query = %app.search_input, "starting search");
@@ -1252,94 +1298,13 @@ async fn run_app(
                                 });
 
                                 // Spawn torrent search task
-                                tokio::spawn(async move {
-                                    let prowlarr_config = crate::config::ProwlarrConfig {
-                                        url: prowlarr_url,
-                                        apikey: prowlarr_apikey,
-                                    };
-                                    let prowlarr = ProwlarrClient::new(&prowlarr_config);
-                                    let torznab = TorznabClient::new();
-
-                                    info!("fetching indexers from prowlarr");
-                                    let mut all_results = Vec::new();
-
-                                    let mut last_error: Option<String> = None;
-
-                                    match prowlarr.get_usable_indexers().await {
-                                        Ok(indexers) => {
-                                            info!(count = indexers.len(), "got indexers");
-                                            for indexer in &indexers {
-                                                info!(indexer = %indexer.name, "searching indexer");
-                                                match torznab
-                                                    .search(
-                                                        &prowlarr_config.url,
-                                                        &prowlarr_config.apikey,
-                                                        indexer.id,
-                                                        &indexer.name,
-                                                        &query,
-                                                        Some(VIDEO_CATEGORIES),
-                                                    )
-                                                    .await
-                                                {
-                                                    Ok(results) => {
-                                                        info!(
-                                                            count = results.len(),
-                                                            "got results from indexer"
-                                                        );
-                                                        all_results.extend(results);
-                                                    }
-                                                    Err(e) => {
-                                                        error!(error = %e, indexer = %indexer.name, "search failed");
-                                                        last_error = Some(format!(
-                                                            "{}: {}",
-                                                            indexer.name, e
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!(error = %e, "failed to get indexers");
-                                            let _ = tx
-                                                .send(UiMessage::SearchError(format!(
-                                                    "Prowlarr error: {}",
-                                                    e
-                                                )))
-                                                .await;
-                                            return;
-                                        }
-                                    }
-
-                                    // Filter and sort
-                                    let mut streamable: Vec<TorrentResult> = all_results
-                                        .into_iter()
-                                        .filter(|r| r.is_streamable())
-                                        .collect();
-                                    streamable.sort_by(|a, b| {
-                                        b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0))
-                                    });
-
-                                    info!(count = streamable.len(), "search complete");
-                                    if streamable.is_empty() {
-                                        if let Some(err) = last_error {
-                                            let _ = tx.send(UiMessage::SearchError(err)).await;
-                                        } else {
-                                            let _ = tx
-                                                .send(UiMessage::SearchComplete {
-                                                    results: streamable,
-                                                    search_id: current_search_id,
-                                                })
-                                                .await;
-                                        }
-                                    } else {
-                                        let _ = tx
-                                            .send(UiMessage::SearchComplete {
-                                                results: streamable,
-                                                search_id: current_search_id,
-                                            })
-                                            .await;
-                                    }
-                                });
+                                spawn_torrent_search(
+                                    query,
+                                    current_search_id,
+                                    tx.clone(),
+                                    prowlarr_url,
+                                    prowlarr_apikey,
+                                );
                             }
                         }
                         KeyCode::Char('d') if app.search_input.is_empty() && !app.is_searching => {

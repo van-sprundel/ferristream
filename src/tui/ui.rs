@@ -12,6 +12,10 @@ use crate::config::Config;
 
 use super::app::{App, SettingsSection, StreamingState, View, WizardStep};
 
+// Discovery UI constants
+const DISCOVERY_ITEM_WIDTH: u16 = 30;
+const MIN_ROW_HEIGHT: u16 = 3;
+
 pub fn draw(frame: &mut Frame, app: &App, config: Option<&Config>) {
     match app.view {
         View::Wizard => {
@@ -260,7 +264,10 @@ fn draw_discovery(frame: &mut Frame, app: &App) {
     } else {
         // Render rows with horizontal item browsing
         let row_count = app.discovery_rows.len();
-        let row_height = chunks[1].height / row_count as u16;
+        let available_height = chunks[1].height;
+
+        // Calculate row height, ensuring it's at least MIN_ROW_HEIGHT
+        let row_height = (available_height / row_count as u16).max(MIN_ROW_HEIGHT);
 
         let row_constraints: Vec<Constraint> = (0..row_count)
             .map(|_| Constraint::Length(row_height))
@@ -276,8 +283,7 @@ fn draw_discovery(frame: &mut Frame, app: &App) {
 
             // Calculate horizontal scrolling
             let visible_width = row_chunks[row_idx].width.saturating_sub(4);
-            let item_width = 30; // ~30 chars per item
-            let visible_items = (visible_width / item_width) as usize;
+            let visible_items = (visible_width / DISCOVERY_ITEM_WIDTH) as usize;
 
             let scroll_offset = if is_selected_row && app.selected_item_index >= visible_items {
                 app.selected_item_index - visible_items + 1
