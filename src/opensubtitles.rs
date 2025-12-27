@@ -40,9 +40,12 @@ struct DownloadResponse {
     link: String,
 }
 
+const BASE_URL: &str = "https://api.opensubtitles.com";
+
 pub struct OpenSubtitlesClient {
     client: Client,
     api_key: String,
+    base_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +57,11 @@ pub struct SubtitleDownload {
 
 impl OpenSubtitlesClient {
     pub fn new(api_key: &str) -> Self {
+        Self::new_with_base_url(api_key, BASE_URL)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_base_url(api_key: &str, base_url: &str) -> Self {
         let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
         let client = Client::builder()
@@ -64,6 +72,23 @@ impl OpenSubtitlesClient {
         Self {
             client,
             api_key: api_key.to_string(),
+            base_url: base_url.to_string(),
+        }
+    }
+
+    #[cfg(not(test))]
+    fn new_with_base_url(api_key: &str, base_url: &str) -> Self {
+        let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
+        let client = Client::builder()
+            .user_agent(user_agent)
+            .build()
+            .expect("Failed to build HTTP client");
+
+        Self {
+            client,
+            api_key: api_key.to_string(),
+            base_url: base_url.to_string(),
         }
     }
 
@@ -77,8 +102,8 @@ impl OpenSubtitlesClient {
         let imdb_clean = imdb_id.trim_start_matches("tt");
 
         let url = format!(
-            "https://api.opensubtitles.com/api/v1/subtitles?imdb_id={}&languages={}",
-            imdb_clean, language
+            "{}/api/v1/subtitles?imdb_id={}&languages={}",
+            self.base_url, imdb_clean, language
         );
 
         debug!(imdb = imdb_clean, language, "searching OpenSubtitles");
@@ -142,8 +167,8 @@ impl OpenSubtitlesClient {
         language: &str,
     ) -> Result<Vec<SubtitleDownload>, OpenSubtitlesError> {
         let url = format!(
-            "https://api.opensubtitles.com/api/v1/subtitles?tmdb_id={}&languages={}",
-            tmdb_id, language
+            "{}/api/v1/subtitles?tmdb_id={}&languages={}",
+            self.base_url, tmdb_id, language
         );
 
         debug!(tmdb_id, language, "searching OpenSubtitles by TMDB");
@@ -199,7 +224,7 @@ impl OpenSubtitlesClient {
     }
 
     async fn get_download_link(&self, file_id: u64) -> Result<String, OpenSubtitlesError> {
-        let url = "https://api.opensubtitles.com/api/v1/download";
+        let url = format!("{}/api/v1/download", self.base_url);
 
         let response = self
             .client
@@ -299,9 +324,16 @@ mod integration_tests {
             .mount(&mock_server)
             .await;
 
-        // Update client to use mock server (we need to modify the implementation for this)
-        // For now, this test demonstrates the structure
-        // In a real implementation, we'd inject the base URL
+        // Create client with mock server URL
+        let client = OpenSubtitlesClient::new_with_base_url("test-key", &mock_server.uri());
+
+        // Test the actual API call
+        let subtitles = client.search_by_imdb("tt0133093", "en").await.unwrap();
+
+        assert_eq!(subtitles.len(), 1);
+        assert_eq!(subtitles[0].language, "en");
+        assert_eq!(subtitles[0].file_name, "movie.en.srt");
+        assert_eq!(subtitles[0].download_url, "https://example.com/download/subtitle.srt");
     }
 
     #[tokio::test]
@@ -377,5 +409,156 @@ mod integration_tests {
         assert_eq!(response.data[0].attributes.files.len(), 2);
         // Implementation uses .first() so only first file is used
         assert_eq!(response.data[0].attributes.files[0].file_name, "first.srt");
+    }
+
+    #[tokio::test]
+    async fn test_search_by_imdb_not_found() {
+        let mock_server = MockServer::start().await;
+
+        let empty_response = serde_json::json!({
+            "data": []
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/subtitles"))
+            .and(query_param("imdb_id", "9999999"))
+            .and(query_param("languages", "en"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&empty_response))
+            .mount(&mock_server)
+            .await;
+
+        let client = OpenSubtitlesClient::new_with_base_url("test-key", &mock_server.uri());
+        let result = client.search_by_imdb("tt9999999", "en").await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenSubtitlesError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn test_search_by_imdb_api_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/subtitles"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&mock_server)
+            .await;
+
+        let client = OpenSubtitlesClient::new_with_base_url("bad-key", &mock_server.uri());
+        let result = client.search_by_imdb("tt0133093", "en").await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            OpenSubtitlesError::ApiError(msg) => {
+                assert!(msg.contains("401"));
+            }
+            _ => panic!("Expected ApiError"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_by_tmdb_success() {
+        let mock_server = MockServer::start().await;
+
+        let search_response = serde_json::json!({
+            "data": [
+                {
+                    "attributes": {
+                        "language": "es",
+                        "files": [
+                            {
+                                "file_id": 456,
+                                "file_name": "pelicula.es.srt"
+                            }
+                        ]
+                    }
+                }
+            ]
+        });
+
+        let download_response = serde_json::json!({
+            "link": "https://example.com/download/spanish.srt"
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/subtitles"))
+            .and(query_param("tmdb_id", "603"))
+            .and(query_param("languages", "es"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&search_response))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/download"))
+            .and(body_json(serde_json::json!({"file_id": 456})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&download_response))
+            .mount(&mock_server)
+            .await;
+
+        let client = OpenSubtitlesClient::new_with_base_url("test-key", &mock_server.uri());
+        let subtitles = client.search_by_tmdb(603, "es").await.unwrap();
+
+        assert_eq!(subtitles.len(), 1);
+        assert_eq!(subtitles[0].language, "es");
+        assert_eq!(subtitles[0].file_name, "pelicula.es.srt");
+        assert_eq!(subtitles[0].download_url, "https://example.com/download/spanish.srt");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_subtitles_limited_to_3() {
+        let mock_server = MockServer::start().await;
+
+        let search_response = serde_json::json!({
+            "data": [
+                {
+                    "attributes": {
+                        "language": "en",
+                        "files": [{"file_id": 1, "file_name": "sub1.srt"}]
+                    }
+                },
+                {
+                    "attributes": {
+                        "language": "en",
+                        "files": [{"file_id": 2, "file_name": "sub2.srt"}]
+                    }
+                },
+                {
+                    "attributes": {
+                        "language": "en",
+                        "files": [{"file_id": 3, "file_name": "sub3.srt"}]
+                    }
+                },
+                {
+                    "attributes": {
+                        "language": "en",
+                        "files": [{"file_id": 4, "file_name": "sub4.srt"}]
+                    }
+                }
+            ]
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/subtitles"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&search_response))
+            .mount(&mock_server)
+            .await;
+
+        // Mock download endpoints for first 3
+        for i in 1..=3 {
+            Mock::given(method("POST"))
+                .and(path("/api/v1/download"))
+                .and(body_json(serde_json::json!({"file_id": i})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"link": format!("https://example.com/sub{}.srt", i)})
+                ))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = OpenSubtitlesClient::new_with_base_url("test-key", &mock_server.uri());
+        let subtitles = client.search_by_imdb("tt0133093", "en").await.unwrap();
+
+        // Should only return top 3
+        assert_eq!(subtitles.len(), 3);
     }
 }
