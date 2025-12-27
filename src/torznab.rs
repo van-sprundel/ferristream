@@ -518,12 +518,18 @@ mod tests {
 
         // magnet_url should be None, not Some("")
         assert_eq!(result.magnet_url, None);
-        assert_eq!(result.link, Some("http://example.com/download.torrent".to_string()));
+        assert_eq!(
+            result.link,
+            Some("http://example.com/download.torrent".to_string())
+        );
 
         // Get the torrent URL - this should return the valid link
         let url = result.get_torrent_url();
-        assert_eq!(url, Some("http://example.com/download.torrent".to_string()),
-            "Expected to get the valid download link, not empty string");
+        assert_eq!(
+            url,
+            Some("http://example.com/download.torrent".to_string()),
+            "Expected to get the valid download link, not empty string"
+        );
     }
 
     #[test]
@@ -552,7 +558,10 @@ mod tests {
 
         // Get the torrent URL - should fall back to the valid link
         let url = result.get_torrent_url();
-        assert_eq!(url, Some("http://example.com/download.torrent".to_string()),
-            "Expected to get the valid download link, not construct invalid magnet");
+        assert_eq!(
+            url,
+            Some("http://example.com/download.torrent".to_string()),
+            "Expected to get the valid download link, not construct invalid magnet"
+        );
     }
 }

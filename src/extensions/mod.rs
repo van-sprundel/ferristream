@@ -71,7 +71,10 @@ pub fn parse_episode_info(filename: &str) -> (Option<u32>, Option<u32>) {
         // Reconstruct the full matched number to check if it's a year
         let full_number = season * 100 + episode;
         // Only valid if episode isn't too high and the full number isn't a year (1900-2099)
-        if (1..=99).contains(&season) && (1..=99).contains(&episode) && !(1900..=2099).contains(&full_number) {
+        if (1..=99).contains(&season)
+            && (1..=99).contains(&episode)
+            && !(1900..=2099).contains(&full_number)
+        {
             return (Some(season), Some(episode));
         }
     }
