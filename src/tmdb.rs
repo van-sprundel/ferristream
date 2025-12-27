@@ -301,11 +301,10 @@ pub fn parse_torrent_title(torrent_name: &str) -> (String, Option<u16>) {
         .and_then(|m| m.as_str().parse().ok());
 
     // Remove everything after the year (usually quality info)
-    if let Some(y) = year {
-        if let Some(idx) = name.find(&y.to_string()) {
+    if let Some(y) = year
+        && let Some(idx) = name.find(&y.to_string()) {
             name = name[..idx].to_string();
         }
-    }
 
     // Remove quality patterns
     for pattern in quality_patterns {

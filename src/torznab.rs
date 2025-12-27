@@ -50,11 +50,10 @@ impl TorrentResult {
         }
 
         // check if link is a magnet url
-        if let Some(ref link) = self.link {
-            if link.starts_with("magnet:") {
+        if let Some(ref link) = self.link
+            && link.starts_with("magnet:") {
                 return Some(link.clone());
             }
-        }
 
         // construct magnet from infohash if available
         if let Some(ref hash) = self.infohash {
@@ -173,8 +172,8 @@ impl TorznabClient {
                     let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
 
                     // handle <torznab:attr name="X" value="Y" /> elements
-                    if name == "torznab:attr" || name == "attr" {
-                        if let Some(ref mut item) = current_item {
+                    if (name == "torznab:attr" || name == "attr")
+                        && let Some(ref mut item) = current_item {
                             let mut attr_name = String::new();
                             let mut attr_value = String::new();
 
@@ -198,7 +197,6 @@ impl TorznabClient {
                                 _ => {}
                             }
                         }
-                    }
                 }
                 Ok(Event::Text(ref e)) => {
                     if let Some(ref mut item) = current_item {
@@ -219,13 +217,11 @@ impl TorznabClient {
                 Ok(Event::End(ref e)) => {
                     let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
 
-                    if name == "item" {
-                        if let Some(item) = current_item.take() {
-                            if !item.title.is_empty() {
+                    if name == "item"
+                        && let Some(item) = current_item.take()
+                            && !item.title.is_empty() {
                                 results.push(item);
                             }
-                        }
-                    }
                 }
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(TorznabError::XmlError(e)),

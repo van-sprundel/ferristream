@@ -224,8 +224,8 @@ impl StreamingSession {
                         match result {
                             Ok(info) => {
                                 // Validate the filename if validation is provided
-                                if let Some(ref v) = validation {
-                                    if !v.matches(&info.selected_file.name) {
+                                if let Some(ref v) = validation
+                                    && !v.matches(&info.selected_file.name) {
                                         info!(
                                             idx,
                                             name = %info.selected_file.name,
@@ -243,7 +243,6 @@ impl StreamingSession {
                                         }
                                         continue;
                                     }
-                                }
                                 info!(idx, name = %info.selected_file.name, "torrent won the race");
                                 return Ok((idx, info));
                             }
@@ -437,8 +436,8 @@ impl StreamingSession {
                 .map_err(|e| StreamError::TorrentError(e.to_string()))?;
 
             // Check if we have file info
-            if let Some(files) = details.get("files").and_then(|f| f.as_array()) {
-                if !files.is_empty() {
+            if let Some(files) = details.get("files").and_then(|f| f.as_array())
+                && !files.is_empty() {
                     info!(files = files.len(), "metadata received");
 
                     // Find all video files
@@ -517,7 +516,6 @@ impl StreamingSession {
                         subtitle_files,
                     });
                 }
-            }
 
             debug!(
                 elapsed_secs = start.elapsed().as_secs(),
@@ -861,23 +859,19 @@ impl VideoFile {
 
         // S01E02 format
         let sxex_re = Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap();
-        if let Some(caps) = sxex_re.captures(&self.name) {
-            if let (Some(s), Some(e)) = (caps.get(1), caps.get(2)) {
-                if let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
+        if let Some(caps) = sxex_re.captures(&self.name)
+            && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
+                && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
                     return (season, episode);
                 }
-            }
-        }
 
         // 1x02 format
         let x_re = Regex::new(r"(?i)(\d{1,2})x(\d{1,3})").unwrap();
-        if let Some(caps) = x_re.captures(&self.name) {
-            if let (Some(s), Some(e)) = (caps.get(1), caps.get(2)) {
-                if let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
+        if let Some(caps) = x_re.captures(&self.name)
+            && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
+                && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
                     return (season, episode);
                 }
-            }
-        }
 
         // If no episode pattern found, use large values to sort at end
         (u32::MAX, u32::MAX)
@@ -970,11 +964,10 @@ pub async fn launch_player(
     }
 
     // For VLC, subtitles are handled differently
-    if command.contains("vlc") {
-        if let Some(sub_url) = subtitle_url {
+    if command.contains("vlc")
+        && let Some(sub_url) = subtitle_url {
             cmd.arg(format!("--sub-file={}", sub_url));
         }
-    }
 
     cmd.args(args);
     cmd.arg(stream_url);

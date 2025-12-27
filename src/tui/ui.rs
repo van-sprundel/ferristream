@@ -924,6 +924,14 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                 false,
             ),
         ],
+        SettingsSection::Streaming => vec![(
+            "Auto Race",
+            format!(
+                "{} (0 = disabled)",
+                config.streaming.auto_race
+            ),
+            false,
+        )],
         SettingsSection::Subtitles => vec![
             (
                 "Enabled",

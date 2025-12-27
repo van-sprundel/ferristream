@@ -72,6 +72,7 @@ pub enum SettingsSection {
     Prowlarr,
     Tmdb,
     Player,
+    Streaming,
     Subtitles,
     Discord,
     Trakt,
@@ -82,7 +83,8 @@ impl SettingsSection {
         match self {
             SettingsSection::Prowlarr => SettingsSection::Tmdb,
             SettingsSection::Tmdb => SettingsSection::Player,
-            SettingsSection::Player => SettingsSection::Subtitles,
+            SettingsSection::Player => SettingsSection::Streaming,
+            SettingsSection::Streaming => SettingsSection::Subtitles,
             SettingsSection::Subtitles => SettingsSection::Discord,
             SettingsSection::Discord => SettingsSection::Trakt,
             SettingsSection::Trakt => SettingsSection::Prowlarr,
@@ -94,7 +96,8 @@ impl SettingsSection {
             SettingsSection::Prowlarr => SettingsSection::Trakt,
             SettingsSection::Tmdb => SettingsSection::Prowlarr,
             SettingsSection::Player => SettingsSection::Tmdb,
-            SettingsSection::Subtitles => SettingsSection::Player,
+            SettingsSection::Streaming => SettingsSection::Player,
+            SettingsSection::Subtitles => SettingsSection::Streaming,
             SettingsSection::Discord => SettingsSection::Subtitles,
             SettingsSection::Trakt => SettingsSection::Discord,
         }
@@ -105,6 +108,7 @@ impl SettingsSection {
             SettingsSection::Prowlarr => "Prowlarr",
             SettingsSection::Tmdb => "TMDB",
             SettingsSection::Player => "Player",
+            SettingsSection::Streaming => "Streaming",
             SettingsSection::Subtitles => "Subtitles",
             SettingsSection::Discord => "Discord",
             SettingsSection::Trakt => "Trakt",
@@ -117,6 +121,7 @@ impl SettingsSection {
             SettingsSection::Prowlarr => 2,  // url, apikey
             SettingsSection::Tmdb => 1,      // apikey
             SettingsSection::Player => 2,    // command, args
+            SettingsSection::Streaming => 1, // auto_race
             SettingsSection::Subtitles => 3, // enabled, language, api_key
             SettingsSection::Discord => 2,   // enabled, app_id
             SettingsSection::Trakt => 3,     // enabled, client_id, access_token
@@ -127,6 +132,7 @@ impl SettingsSection {
         SettingsSection::Prowlarr,
         SettingsSection::Tmdb,
         SettingsSection::Player,
+        SettingsSection::Streaming,
         SettingsSection::Subtitles,
         SettingsSection::Discord,
         SettingsSection::Trakt,

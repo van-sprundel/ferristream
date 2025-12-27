@@ -825,8 +825,8 @@ async fn run_app(
         }
 
         // Handle input with timeout
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()? {
                 // Global quit
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     app.should_quit = true;
@@ -938,12 +938,11 @@ async fn run_app(
 
                                 info!(tv_id, "fetching TV show details");
                                 tokio::spawn(async move {
-                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
-                                        if let Ok(details) = client.get_tv_details(tv_id).await {
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref())
+                                        && let Ok(details) = client.get_tv_details(tv_id).await {
                                             let _ =
                                                 tx.send(UiMessage::TvDetailsLoaded(details)).await;
                                         }
-                                    }
                                 });
                             } else {
                                 // Movie or no suggestion - do torrent search
@@ -966,8 +965,7 @@ async fn run_app(
                                     if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
                                         debug!(query = %tmdb_query, "looking up TMDB info");
                                         if let Ok(results) = client.search_multi(&tmdb_query).await
-                                        {
-                                            if let Some(first) = results.first() {
+                                            && let Some(first) = results.first() {
                                                 let info = TmdbMetadata {
                                                     id: Some(first.id),
                                                     title: first.display_title().to_string(),
@@ -980,7 +978,6 @@ async fn run_app(
                                                 let _ =
                                                     tmdb_tx.send(UiMessage::TmdbInfo(info)).await;
                                             }
-                                        }
                                     }
                                 });
 
@@ -1122,8 +1119,8 @@ async fn run_app(
                                 app.is_fetching_suggestions = true;
 
                                 tokio::spawn(async move {
-                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
-                                        if let Ok(results) = client.search_multi(&query).await {
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref())
+                                        && let Ok(results) = client.search_multi(&query).await {
                                             let suggestions: Vec<TmdbSuggestion> = results
                                                 .into_iter()
                                                 .take(5)
@@ -1137,7 +1134,6 @@ async fn run_app(
                                             let _ =
                                                 tx.send(UiMessage::Suggestions(suggestions)).await;
                                         }
-                                    }
                                 });
                             }
                         }
@@ -1154,8 +1150,8 @@ async fn run_app(
                                 app.is_fetching_suggestions = true;
 
                                 tokio::spawn(async move {
-                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
-                                        if let Ok(results) = client.search_multi(&query).await {
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref())
+                                        && let Ok(results) = client.search_multi(&query).await {
                                             let suggestions: Vec<TmdbSuggestion> = results
                                                 .into_iter()
                                                 .take(5)
@@ -1169,7 +1165,6 @@ async fn run_app(
                                             let _ =
                                                 tx.send(UiMessage::Suggestions(suggestions)).await;
                                         }
-                                    }
                                 });
                             }
                         }
@@ -1199,8 +1194,8 @@ async fn run_app(
                                 app.is_fetching_tv_details = true;
 
                                 tokio::spawn(async move {
-                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) {
-                                        if let Ok(details) =
+                                    if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref())
+                                        && let Ok(details) =
                                             client.get_season_details(tv_id, season_number).await
                                         {
                                             let _ = tx
@@ -1209,7 +1204,6 @@ async fn run_app(
                                                 ))
                                                 .await;
                                         }
-                                    }
                                 });
                             }
                         }
@@ -1329,8 +1323,8 @@ async fn run_app(
                             app.select_next();
                         }
                         KeyCode::Enter if !app.is_streaming => {
-                            if let Some(result) = app.selected_result() {
-                                if let Some(url) = result.get_torrent_url() {
+                            if let Some(result) = app.selected_result()
+                                && let Some(url) = result.get_torrent_url() {
                                     info!(title = %result.title, "starting stream");
                                     // Use TMDB title if available, otherwise torrent title
                                     app.current_title = app
@@ -1411,7 +1405,6 @@ async fn run_app(
                                             .await;
                                     });
                                 }
-                            }
                         }
                         _ => {}
                     },
@@ -1813,7 +1806,6 @@ async fn run_app(
                     }
                 }
             }
-        }
 
         if app.should_quit {
             // Cleanup before exit
@@ -1846,6 +1838,10 @@ fn get_settings_field_value(app: &App, config: &Config) -> String {
         SettingsSection::Player => match app.settings_field_index {
             0 => config.player.command.clone(),
             1 => config.player.args.join(" "),
+            _ => String::new(),
+        },
+        SettingsSection::Streaming => match app.settings_field_index {
+            0 => config.streaming.auto_race.to_string(),
             _ => String::new(),
         },
         SettingsSection::Subtitles => match app.settings_field_index {
@@ -1912,6 +1908,10 @@ fn apply_settings_edit(app: &App, config: &mut Config) {
             }
             _ => {}
         },
+        SettingsSection::Streaming => if app.settings_field_index == 0
+            && let Ok(v) = value.parse::<u8>() {
+                config.streaming.auto_race = v;
+            },
         SettingsSection::Subtitles => match app.settings_field_index {
             0 => config.subtitles.enabled = value.to_lowercase() == "true",
             1 => config.subtitles.language = value,

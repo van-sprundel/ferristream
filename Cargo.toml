@@ -2,6 +2,14 @@
 name = "ferristream"
 version = "0.0.10"
 edition = "2024"
+repository = "https://github.com/van-sprundel/ferristream"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.{ archive-format }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 [dependencies]
 librqbit = { version = "8.1.1", default-features = false, features = ["http-api", "tracing-subscriber-utils", "rust-tls"] }
