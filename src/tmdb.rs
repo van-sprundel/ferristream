@@ -241,6 +241,109 @@ impl TmdbClient {
 
         Ok(response)
     }
+
+    /// Get trending content (movies + TV)
+    pub async fn get_trending(
+        &self,
+        media_type: &str,
+        time_window: &str,
+    ) -> Result<Vec<SearchResult>, TmdbError> {
+        let url = format!(
+            "{}/3/trending/{}/{}?api_key={}",
+            self.base_url, media_type, time_window, self.api_key
+        );
+
+        debug!(media_type, time_window, "fetching trending content");
+
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
+
+        Ok(response.results)
+    }
+
+    /// Get popular movies
+    pub async fn get_popular_movies(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        let url = format!("{}/3/movie/popular?api_key={}", self.base_url, self.api_key);
+
+        debug!("fetching popular movies");
+
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
+
+        Ok(response.results)
+    }
+
+    /// Get popular TV shows
+    pub async fn get_popular_tv(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        let url = format!("{}/3/tv/popular?api_key={}", self.base_url, self.api_key);
+
+        debug!("fetching popular TV shows");
+
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
+
+        Ok(response.results)
+    }
+
+    /// Get upcoming movies
+    pub async fn get_upcoming(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        let url = format!("{}/3/movie/upcoming?api_key={}", self.base_url, self.api_key);
+
+        debug!("fetching upcoming movies");
+
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
+
+        Ok(response.results)
+    }
+
+    /// Discover mixed content for recommendations
+    pub async fn discover_mixed(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        // Get movies
+        let movies_url = format!(
+            "{}/3/discover/movie?api_key={}&sort_by=popularity.desc",
+            self.base_url, self.api_key
+        );
+
+        // Get TV shows
+        let tv_url = format!(
+            "{}/3/discover/tv?api_key={}&sort_by=popularity.desc",
+            self.base_url, self.api_key
+        );
+
+        debug!("fetching discover content");
+
+        // Fetch both in parallel
+        let (movies_response, tv_response) = tokio::try_join!(
+            async {
+                self.client
+                    .get(&movies_url)
+                    .send()
+                    .await?
+                    .json::<SearchResponse>()
+                    .await
+            },
+            async {
+                self.client
+                    .get(&tv_url)
+                    .send()
+                    .await?
+                    .json::<SearchResponse>()
+                    .await
+            }
+        )?;
+
+        // Interleave results (movie, tv, movie, tv, ...)
+        let mut results = Vec::new();
+        let max_len = movies_response.results.len().max(tv_response.results.len());
+
+        for i in 0..max_len {
+            if i < movies_response.results.len() {
+                results.push(movies_response.results[i].clone());
+            }
+            if i < tv_response.results.len() {
+                results.push(tv_response.results[i].clone());
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 /// Try to extract a clean title and year from a torrent name

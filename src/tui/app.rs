@@ -8,6 +8,8 @@ use crate::doctor::{CheckResult, CheckStatus};
 pub enum View {
     /// First-run setup wizard
     Wizard,
+    /// Discovery/browse page with content rows
+    Discovery,
     Search,
     Results,
     /// Browse seasons of a TV show
@@ -290,12 +292,53 @@ pub struct App {
 
     // Racing status
     pub racing_message: Option<String>,
+
+    // Discovery
+    pub discovery_rows: Vec<DiscoveryRow>,
+    pub selected_row_index: usize,
+    pub selected_item_index: usize,
+    pub is_loading_discovery: bool,
+    pub discovery_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryRow {
+    pub title: String,
+    pub items: Vec<DiscoveryItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryItem {
+    pub id: u64,
+    pub title: String,
+    pub year: Option<u16>,
+    pub media_type: String, // "movie" or "tv"
+    pub poster_url: Option<String>,
+    pub overview: Option<String>,
+    pub rating: Option<f64>,
+}
+
+impl From<TmdbResult> for DiscoveryItem {
+    fn from(result: TmdbResult) -> Self {
+        DiscoveryItem {
+            id: result.id,
+            title: result.display_title().to_string(),
+            year: result.year(),
+            media_type: result
+                .media_type
+                .clone()
+                .unwrap_or_else(|| "movie".to_string()),
+            poster_url: result.poster_url("w300"),
+            overview: result.overview,
+            rating: result.vote_average,
+        }
+    }
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
-            view: View::Search,
+            view: View::Discovery,
             should_quit: false,
             search_input: String::new(),
             is_searching: false,
@@ -344,6 +387,11 @@ impl App {
             resume_progress: 0.0,
             playback_progress: 0.0,
             racing_message: None,
+            discovery_rows: Vec::new(),
+            selected_row_index: 0,
+            selected_item_index: 0,
+            is_loading_discovery: false,
+            discovery_error: None,
         }
     }
 
@@ -513,5 +561,42 @@ impl App {
 
     pub fn selected_tv_episode(&self) -> Option<&Episode> {
         self.tv_episodes.get(self.selected_episode_index)
+    }
+
+    // Discovery navigation helpers
+    pub fn select_next_row(&mut self) {
+        if !self.discovery_rows.is_empty() {
+            self.selected_row_index =
+                (self.selected_row_index + 1).min(self.discovery_rows.len() - 1);
+            self.selected_item_index = 0;
+        }
+    }
+
+    pub fn select_previous_row(&mut self) {
+        if self.selected_row_index > 0 {
+            self.selected_row_index -= 1;
+            self.selected_item_index = 0;
+        }
+    }
+
+    pub fn select_next_item(&mut self) {
+        if let Some(row) = self.discovery_rows.get(self.selected_row_index) {
+            if !row.items.is_empty() {
+                self.selected_item_index =
+                    (self.selected_item_index + 1).min(row.items.len() - 1);
+            }
+        }
+    }
+
+    pub fn select_previous_item(&mut self) {
+        if self.selected_item_index > 0 {
+            self.selected_item_index -= 1;
+        }
+    }
+
+    pub fn selected_discovery_item(&self) -> Option<&DiscoveryItem> {
+        self.discovery_rows
+            .get(self.selected_row_index)
+            .and_then(|row| row.items.get(self.selected_item_index))
     }
 }

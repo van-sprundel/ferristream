@@ -19,6 +19,7 @@ pub fn draw(frame: &mut Frame, app: &App, config: Option<&Config>) {
                 draw_wizard(frame, app, cfg);
             }
         }
+        View::Discovery => draw_discovery(frame, app),
         View::Search => draw_search(frame, app),
         View::Results => draw_results(frame, app),
         View::TvSeasons => draw_tv_seasons(frame, app),
@@ -217,6 +218,135 @@ fn build_wizard_fields(app: &App, fields: &[(&str, String, usize)]) -> Vec<Line<
             ])
         })
         .collect()
+}
+
+fn draw_discovery(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(0),    // Content
+            Constraint::Length(2), // Help
+        ])
+        .split(frame.area());
+
+    // Title
+    let title = Paragraph::new("ferristream - Discovery")
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default());
+    frame.render_widget(title, chunks[0]);
+
+    // Content
+    if app.is_loading_discovery {
+        let loading = Paragraph::new("Loading discovery data...")
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(loading, chunks[1]);
+    } else if let Some(ref err) = app.discovery_error {
+        let error = Paragraph::new(err.as_str())
+            .style(Style::default().fg(Color::Red))
+            .block(Block::default().borders(Borders::ALL).title("Error"));
+        frame.render_widget(error, chunks[1]);
+    } else if app.discovery_rows.is_empty() {
+        let empty = Paragraph::new("No discovery data. Press 'r' to refresh.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(empty, chunks[1]);
+    } else {
+        // Render rows with horizontal item browsing
+        let row_count = app.discovery_rows.len();
+        let row_height = chunks[1].height / row_count as u16;
+
+        let row_constraints: Vec<Constraint> = (0..row_count)
+            .map(|_| Constraint::Length(row_height))
+            .collect();
+
+        let row_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(row_constraints)
+            .split(chunks[1]);
+
+        for (row_idx, row) in app.discovery_rows.iter().enumerate() {
+            let is_selected_row = row_idx == app.selected_row_index;
+
+            // Calculate horizontal scrolling
+            let visible_width = row_chunks[row_idx].width.saturating_sub(4);
+            let item_width = 30; // ~30 chars per item
+            let visible_items = (visible_width / item_width) as usize;
+
+            let scroll_offset = if is_selected_row && app.selected_item_index >= visible_items {
+                app.selected_item_index - visible_items + 1
+            } else {
+                0
+            };
+
+            // Build horizontal spans
+            let mut spans = Vec::new();
+            for (display_idx, item) in row
+                .items
+                .iter()
+                .skip(scroll_offset)
+                .take(visible_items)
+                .enumerate()
+            {
+                let actual_idx = scroll_offset + display_idx;
+                let is_selected = is_selected_row && actual_idx == app.selected_item_index;
+
+                let style = if is_selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else if is_selected_row {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+
+                let year_str = item.year.map(|y| format!(" ({})", y)).unwrap_or_default();
+                let media_icon = if item.media_type == "movie" {
+                    "🎬"
+                } else {
+                    "📺"
+                };
+                let rating_str = item
+                    .rating
+                    .map(|r| format!(" ★{:.1}", r))
+                    .unwrap_or_default();
+
+                let text = format!(" {}{}{}{} ", media_icon, item.title, year_str, rating_str);
+                spans.push(Span::styled(text, style));
+                spans.push(Span::raw("  "));
+            }
+
+            let border_style = if is_selected_row {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            let line = Line::from(spans);
+            let paragraph = Paragraph::new(line).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style)
+                    .title(row.title.clone()),
+            );
+
+            frame.render_widget(paragraph, row_chunks[row_idx]);
+        }
+    }
+
+    // Help
+    let help_text = if app.is_loading_discovery {
+        "Loading..."
+    } else {
+        "↑/↓: rows | ←/→: items | Enter: select | /: search | r: refresh | s: settings | d: doctor | q: quit"
+    };
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[2]);
 }
 
 fn draw_search(frame: &mut Frame, app: &App) {

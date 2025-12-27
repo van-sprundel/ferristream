@@ -2,8 +2,8 @@ mod app;
 mod ui;
 
 pub use app::{
-    App, DownloadProgress, SettingsSection, SortOrder, StreamingState, TmdbMetadata,
-    TmdbSuggestion, View, WizardStep,
+    App, DiscoveryItem, DiscoveryRow, DownloadProgress, SettingsSection, SortOrder,
+    StreamingState, TmdbMetadata, TmdbSuggestion, View, WizardStep,
 };
 
 use std::io;
@@ -62,11 +62,94 @@ pub enum UiMessage {
     PlaybackProgress(f64),
     PlayerExited,
     DoctorComplete(Vec<CheckResult>),
+    /// Discovery data loaded
+    DiscoveryLoaded { rows: Vec<DiscoveryRow> },
+    /// Discovery loading failed
+    DiscoveryError(String),
 }
 
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+}
+
+fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
+    let tx = tx.clone();
+    let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+
+    tokio::spawn(async move {
+        let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) else {
+            let _ = tx
+                .send(UiMessage::DiscoveryError(
+                    "TMDB API key not configured".to_string(),
+                ))
+                .await;
+            return;
+        };
+
+        let mut rows = Vec::new();
+
+        // Row 1: Trending
+        if let Ok(results) = client.get_trending("all", "week").await {
+            rows.push(DiscoveryRow {
+                title: "Trending This Week".to_string(),
+                items: results
+                    .into_iter()
+                    .take(20)
+                    .map(DiscoveryItem::from)
+                    .collect(),
+            });
+        }
+
+        // Row 2: Popular (combine movies + TV)
+        let mut popular_items = Vec::new();
+        if let Ok(movies) = client.get_popular_movies().await {
+            popular_items.extend(movies.into_iter().take(10).map(DiscoveryItem::from));
+        }
+        if let Ok(tv) = client.get_popular_tv().await {
+            popular_items.extend(tv.into_iter().take(10).map(DiscoveryItem::from));
+        }
+        if !popular_items.is_empty() {
+            rows.push(DiscoveryRow {
+                title: "Popular".to_string(),
+                items: popular_items,
+            });
+        }
+
+        // Row 3: Upcoming
+        if let Ok(results) = client.get_upcoming().await {
+            rows.push(DiscoveryRow {
+                title: "Upcoming Releases".to_string(),
+                items: results
+                    .into_iter()
+                    .take(20)
+                    .map(DiscoveryItem::from)
+                    .collect(),
+            });
+        }
+
+        // Row 4: For You (use discover)
+        if let Ok(results) = client.discover_mixed().await {
+            rows.push(DiscoveryRow {
+                title: "For You".to_string(),
+                items: results
+                    .into_iter()
+                    .take(20)
+                    .map(DiscoveryItem::from)
+                    .collect(),
+            });
+        }
+
+        if rows.is_empty() {
+            let _ = tx
+                .send(UiMessage::DiscoveryError(
+                    "Failed to load discovery data".to_string(),
+                ))
+                .await;
+        } else {
+            let _ = tx.send(UiMessage::DiscoveryLoaded { rows }).await;
+        }
+    });
 }
 
 pub async fn run(
@@ -150,6 +233,12 @@ async fn run_app(
     let mut streaming_cancel: Option<CancellationToken> = None;
     // Stored torrent info for file selection
     let mut pending_torrent_info: Option<crate::streaming::TorrentInfo> = None;
+
+    // Load discovery data on startup (if not in wizard mode)
+    if app.view == View::Discovery {
+        app.is_loading_discovery = true;
+        load_discovery_data(&tx, config);
+    }
 
     loop {
         // Draw UI
@@ -334,6 +423,17 @@ async fn run_app(
                 UiMessage::DoctorComplete(results) => {
                     app.doctor_results = results;
                     app.is_checking = false;
+                }
+                UiMessage::DiscoveryLoaded { rows } => {
+                    app.discovery_rows = rows;
+                    app.selected_row_index = 0;
+                    app.selected_item_index = 0;
+                    app.is_loading_discovery = false;
+                    app.discovery_error = None;
+                }
+                UiMessage::DiscoveryError(e) => {
+                    app.is_loading_discovery = false;
+                    app.discovery_error = Some(e);
                 }
                 UiMessage::RacingStatus { count, message } => {
                     app.racing_message = Some(format!("Racing {} torrents: {}", count, message));
@@ -812,7 +912,7 @@ async fn run_app(
                         app.racing_message = None;
                         // Go back to Search if auto-race is enabled (user never saw Results)
                         app.view = if config.streaming.auto_race > 0 {
-                            View::Search
+                            View::Discovery
                         } else {
                             View::Results
                         };
@@ -875,7 +975,7 @@ async fn run_app(
                                         } else {
                                             info!("Config saved from wizard");
                                         }
-                                        app.view = View::Search;
+                                        app.view = View::Discovery;
                                     } else if app.wizard_field_count() == 0 {
                                         // No fields (Welcome) - just advance
                                         app.wizard_step = app.wizard_step.next();
@@ -906,6 +1006,176 @@ async fn run_app(
                             }
                         }
                     }
+
+                    View::Discovery => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            app.should_quit = true;
+                        }
+                        KeyCode::Char('/') => {
+                            app.view = View::Search;
+                            app.search_input.clear();
+                        }
+                        KeyCode::Char('r') if !app.is_loading_discovery => {
+                            load_discovery_data(&tx, config);
+                            app.is_loading_discovery = true;
+                        }
+                        KeyCode::Char('s') => {
+                            app.view = View::Settings;
+                        }
+                        KeyCode::Char('d') => {
+                            app.view = View::Doctor;
+                            app.is_checking = true;
+
+                            let tx = tx.clone();
+                            let config_clone = config.clone();
+
+                            tokio::spawn(async move {
+                                let results = doctor::run_checks(&config_clone).await;
+                                let _ = tx.send(UiMessage::DoctorComplete(results)).await;
+                            });
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.select_previous_row();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.select_next_row();
+                        }
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            app.select_previous_item();
+                        }
+                        KeyCode::Right | KeyCode::Char('l') => {
+                            app.select_next_item();
+                        }
+                        KeyCode::Enter if !app.is_loading_discovery => {
+                            if let Some(item) = app.selected_discovery_item().cloned() {
+                                // Set metadata
+                                app.current_title = item.title.clone();
+                                app.current_tmdb_id = Some(item.id);
+                                app.current_year = item.year;
+                                app.current_media_type = Some(item.media_type.clone());
+                                app.current_poster_url = item.poster_url.clone();
+
+                                // If TV show, go to season browser
+                                if item.media_type == "tv" {
+                                    let tv_id = item.id;
+                                    let tx = tx.clone();
+                                    let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+
+                                    app.is_fetching_tv_details = true;
+
+                                    tokio::spawn(async move {
+                                        if let Some(client) = TmdbClient::new(tmdb_apikey.as_deref())
+                                            && let Ok(details) = client.get_tv_details(tv_id).await
+                                        {
+                                            let _ = tx.send(UiMessage::TvDetailsLoaded(details)).await;
+                                        }
+                                    });
+                                } else {
+                                    // Movie - start torrent search
+                                    let search_query = if let Some(year) = item.year {
+                                        format!("{} {}", item.title, year)
+                                    } else {
+                                        item.title.clone()
+                                    };
+
+                                    app.search_id += 1;
+                                    app.is_searching = true;
+                                    app.search_input = search_query.clone();
+                                    app.search_error = None;
+
+                                    let current_search_id = app.search_id;
+                                    let tx_search = tx.clone();
+                                    let prowlarr_url = config.prowlarr.url.clone();
+                                    let prowlarr_apikey = config.prowlarr.apikey.clone();
+
+                                    // Spawn torrent search task (same logic as Search view)
+                                    tokio::spawn(async move {
+                                        let prowlarr_config = crate::config::ProwlarrConfig {
+                                            url: prowlarr_url,
+                                            apikey: prowlarr_apikey,
+                                        };
+                                        let prowlarr = ProwlarrClient::new(&prowlarr_config);
+                                        let torznab = TorznabClient::new();
+
+                                        let mut all_results = Vec::new();
+                                        let mut last_error: Option<String> = None;
+
+                                        match prowlarr.get_usable_indexers().await {
+                                            Ok(indexers) => {
+                                                if indexers.is_empty() {
+                                                    let _ = tx_search
+                                                        .send(UiMessage::SearchError(
+                                                            "No indexers configured in Prowlarr"
+                                                                .to_string(),
+                                                        ))
+                                                        .await;
+                                                    return;
+                                                }
+
+                                                for indexer in &indexers {
+                                                    match torznab
+                                                        .search(
+                                                            &prowlarr_config.url,
+                                                            &prowlarr_config.apikey,
+                                                            indexer.id,
+                                                            &indexer.name,
+                                                            &search_query,
+                                                            Some(VIDEO_CATEGORIES),
+                                                        )
+                                                        .await
+                                                    {
+                                                        Ok(results) => {
+                                                            all_results.extend(results);
+                                                        }
+                                                        Err(e) => {
+                                                            error!(
+                                                                indexer = indexer.name,
+                                                                error = %e,
+                                                                "indexer search failed"
+                                                            );
+                                                            last_error = Some(format!(
+                                                                "{}: {}",
+                                                                indexer.name, e
+                                                            ));
+                                                        }
+                                                    }
+                                                }
+
+                                                if all_results.is_empty() {
+                                                    let error_msg = last_error
+                                                        .unwrap_or_else(|| {
+                                                            "No results found".to_string()
+                                                        });
+                                                    let _ = tx_search
+                                                        .send(UiMessage::SearchError(error_msg))
+                                                        .await;
+                                                } else {
+                                                    let _ = tx_search
+                                                        .send(UiMessage::SearchComplete {
+                                                            results: all_results,
+                                                            search_id: current_search_id,
+                                                        })
+                                                        .await;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let _ = tx_search
+                                                    .send(UiMessage::SearchError(format!(
+                                                        "Prowlarr error: {}",
+                                                        e
+                                                    )))
+                                                    .await;
+                                            }
+                                        }
+                                    });
+
+                                    // Navigate to Results view
+                                    app.view = View::Results;
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
 
                     View::Search => match key.code {
                         KeyCode::Esc | KeyCode::Char('q') if app.search_input.is_empty() => {
@@ -1173,7 +1443,7 @@ async fn run_app(
 
                     View::TvSeasons => match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            app.view = View::Search;
+                            app.view = View::Discovery;
                             app.tv_details = None;
                             app.tv_seasons.clear();
                         }
@@ -1307,7 +1577,7 @@ async fn run_app(
 
                     View::Results => match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            app.view = View::Search;
+                            app.view = View::Discovery;
                         }
                         KeyCode::Char('/') => {
                             app.view = View::Search;
@@ -1686,7 +1956,7 @@ async fn run_app(
                             // Go back to Search if auto-race is enabled (user never saw Results)
                             // Otherwise go back to Results
                             app.view = if config.streaming.auto_race > 0 {
-                                View::Search
+                                View::Discovery
                             } else {
                                 View::Results
                             };
@@ -1706,7 +1976,7 @@ async fn run_app(
 
                     View::Doctor => match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            app.view = View::Search;
+                            app.view = View::Discovery;
                         }
                         KeyCode::Char('r') if !app.is_checking => {
                             // Run checks
@@ -1758,7 +2028,7 @@ async fn run_app(
                                         }
                                         app.settings_dirty = false;
                                     }
-                                    app.view = View::Search;
+                                    app.view = View::Discovery;
                                     app.settings_field_index = 0;
                                 }
                                 KeyCode::Left | KeyCode::Char('h') => {
