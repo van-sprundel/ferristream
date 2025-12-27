@@ -260,39 +260,32 @@ impl TmdbClient {
         Ok(response.results)
     }
 
-    /// Get popular movies
-    pub async fn get_popular_movies(&self) -> Result<Vec<SearchResult>, TmdbError> {
-        let url = format!("{}/3/movie/popular?api_key={}", self.base_url, self.api_key);
+    /// Helper function to fetch a TMDB list endpoint
+    async fn get_tmdb_list(&self, path: &str, debug_message: &str) -> Result<Vec<SearchResult>, TmdbError> {
+        let url = format!("{}{}?api_key={}", self.base_url, path, self.api_key);
 
-        debug!("fetching popular movies");
+        debug!(debug_message);
 
         let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
-
         Ok(response.results)
+    }
+
+    /// Get popular movies
+    pub async fn get_popular_movies(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        self.get_tmdb_list("/3/movie/popular", "fetching popular movies").await
     }
 
     /// Get popular TV shows
     pub async fn get_popular_tv(&self) -> Result<Vec<SearchResult>, TmdbError> {
-        let url = format!("{}/3/tv/popular?api_key={}", self.base_url, self.api_key);
-
-        debug!("fetching popular TV shows");
-
-        let mut response: SearchResponse = self.client.get(&url).send().await?.json().await?;
-        response.results.iter_mut().for_each(|r| r.media_type = Some("tv".to_string()));
-
-        Ok(response.results)
-    }
+        let mut results = self.get_tmdb_list("/3/tv/popular", "fetching popular TV shows").await?;
+        // Set media_type for TV shows since the endpoint doesn't return it
+        results.iter_mut().for_each(|r| r.media_type = Some("tv".to_string()));
+        Ok(results)
     }
 
     /// Get upcoming movies
     pub async fn get_upcoming(&self) -> Result<Vec<SearchResult>, TmdbError> {
-        let url = format!("{}/3/movie/upcoming?api_key={}", self.base_url, self.api_key);
-
-        debug!("fetching upcoming movies");
-
-        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
-
-        Ok(response.results)
+        self.get_tmdb_list("/3/movie/upcoming", "fetching upcoming movies").await
     }
 
     /// Discover mixed content for recommendations
@@ -331,16 +324,23 @@ impl TmdbClient {
             }
         )?;
 
-        // Interleave results (movie, tv, movie, tv, ...)
+        // Interleave results (movie, tv, movie, tv, ...) without cloning
         let mut results = Vec::new();
-        let max_len = movies_response.results.len().max(tv_response.results.len());
+        let mut movies_iter = movies_response.results.into_iter();
+        let mut tv_iter = tv_response.results.into_iter();
 
-        for i in 0..max_len {
-            if i < movies_response.results.len() {
-                results.push(movies_response.results[i].clone());
+        loop {
+            let mut added_any = false;
+            if let Some(movie) = movies_iter.next() {
+                results.push(movie);
+                added_any = true;
             }
-            if i < tv_response.results.len() {
-                results.push(tv_response.results[i].clone());
+            if let Some(tv) = tv_iter.next() {
+                results.push(tv);
+                added_any = true;
+            }
+            if !added_any {
+                break;
             }
         }
 

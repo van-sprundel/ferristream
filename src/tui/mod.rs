@@ -96,8 +96,18 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
 
         let mut rows = Vec::new();
 
+        // Fetch all data in parallel for better performance
+        let (trending_res, popular_movies_res, popular_tv_res, upcoming_res, discover_res) =
+            tokio::join!(
+                client.get_trending("all", "week"),
+                client.get_popular_movies(),
+                client.get_popular_tv(),
+                client.get_upcoming(),
+                client.discover_mixed()
+            );
+
         // Row 1: Trending
-        match client.get_trending("all", "week").await {
+        match trending_res {
             Ok(results) => {
                 rows.push(DiscoveryRow {
                     title: "Trending This Week".to_string(),
@@ -115,7 +125,7 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
 
         // Row 2: Popular (combine movies + TV)
         let mut popular_items = Vec::new();
-        match client.get_popular_movies().await {
+        match popular_movies_res {
             Ok(movies) => {
                 popular_items.extend(
                     movies
@@ -128,7 +138,7 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
                 tracing::warn!(error = %e, "failed to load popular movies");
             }
         }
-        match client.get_popular_tv().await {
+        match popular_tv_res {
             Ok(tv) => {
                 popular_items.extend(
                     tv.into_iter()
@@ -148,7 +158,7 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
         }
 
         // Row 3: Upcoming
-        match client.get_upcoming().await {
+        match upcoming_res {
             Ok(results) => {
                 rows.push(DiscoveryRow {
                     title: "Upcoming Releases".to_string(),
@@ -165,7 +175,7 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
         }
 
         // Row 4: For You (use discover)
-        match client.discover_mixed().await {
+        match discover_res {
             Ok(results) => {
                 rows.push(DiscoveryRow {
                     title: "For You".to_string(),
