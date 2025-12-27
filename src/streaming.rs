@@ -437,85 +437,86 @@ impl StreamingSession {
 
             // Check if we have file info
             if let Some(files) = details.get("files").and_then(|f| f.as_array())
-                && !files.is_empty() {
-                    info!(files = files.len(), "metadata received");
+                && !files.is_empty()
+            {
+                info!(files = files.len(), "metadata received");
 
-                    // Find all video files
-                    let video_files: Vec<VideoFile> = files
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, f)| {
-                            let name = f.get("name").and_then(|n| n.as_str())?;
-                            let name_lower = name.to_lowercase();
-                            if VIDEO_EXTENSIONS.iter().any(|ext| name_lower.ends_with(ext)) {
-                                let size = f.get("length").and_then(|l| l.as_u64()).unwrap_or(0);
-                                Some(VideoFile {
-                                    name: name.to_string(),
-                                    file_idx: idx,
-                                    size,
-                                    stream_url: format!(
-                                        "http://{}/torrents/{}/stream/{}",
-                                        self.http_addr, id, idx
-                                    ),
-                                })
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
+                // Find all video files
+                let video_files: Vec<VideoFile> = files
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, f)| {
+                        let name = f.get("name").and_then(|n| n.as_str())?;
+                        let name_lower = name.to_lowercase();
+                        if VIDEO_EXTENSIONS.iter().any(|ext| name_lower.ends_with(ext)) {
+                            let size = f.get("length").and_then(|l| l.as_u64()).unwrap_or(0);
+                            Some(VideoFile {
+                                name: name.to_string(),
+                                file_idx: idx,
+                                size,
+                                stream_url: format!(
+                                    "http://{}/torrents/{}/stream/{}",
+                                    self.http_addr, id, idx
+                                ),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
-                    if video_files.is_empty() {
-                        return Err(StreamError::NoVideoFiles);
-                    }
-
-                    info!(video_files = video_files.len(), "found video files");
-
-                    // Select the largest video file by default (usually the main content)
-                    let selected_file = video_files.iter().max_by_key(|f| f.size).cloned().unwrap();
-
-                    let torrent_name = details
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-
-                    // Find subtitle files
-                    let subtitle_files: Vec<SubtitleFile> = files
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, f)| {
-                            let name = f.get("name").and_then(|n| n.as_str())?;
-                            let name_lower = name.to_lowercase();
-                            if SUBTITLE_EXTENSIONS
-                                .iter()
-                                .any(|ext| name_lower.ends_with(ext))
-                            {
-                                let language = extract_subtitle_language(name);
-                                Some(SubtitleFile {
-                                    name: name.to_string(),
-                                    file_idx: idx,
-                                    language,
-                                    stream_url: format!(
-                                        "http://{}/torrents/{}/stream/{}",
-                                        self.http_addr, id, idx
-                                    ),
-                                })
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    info!(subtitles = subtitle_files.len(), "found subtitle files");
-
-                    return Ok(TorrentInfo {
-                        id,
-                        name: torrent_name,
-                        video_files,
-                        selected_file,
-                        subtitle_files,
-                    });
+                if video_files.is_empty() {
+                    return Err(StreamError::NoVideoFiles);
                 }
+
+                info!(video_files = video_files.len(), "found video files");
+
+                // Select the largest video file by default (usually the main content)
+                let selected_file = video_files.iter().max_by_key(|f| f.size).cloned().unwrap();
+
+                let torrent_name = details
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                // Find subtitle files
+                let subtitle_files: Vec<SubtitleFile> = files
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, f)| {
+                        let name = f.get("name").and_then(|n| n.as_str())?;
+                        let name_lower = name.to_lowercase();
+                        if SUBTITLE_EXTENSIONS
+                            .iter()
+                            .any(|ext| name_lower.ends_with(ext))
+                        {
+                            let language = extract_subtitle_language(name);
+                            Some(SubtitleFile {
+                                name: name.to_string(),
+                                file_idx: idx,
+                                language,
+                                stream_url: format!(
+                                    "http://{}/torrents/{}/stream/{}",
+                                    self.http_addr, id, idx
+                                ),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                info!(subtitles = subtitle_files.len(), "found subtitle files");
+
+                return Ok(TorrentInfo {
+                    id,
+                    name: torrent_name,
+                    video_files,
+                    selected_file,
+                    subtitle_files,
+                });
+            }
 
             debug!(
                 elapsed_secs = start.elapsed().as_secs(),
@@ -861,17 +862,19 @@ impl VideoFile {
         let sxex_re = Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap();
         if let Some(caps) = sxex_re.captures(&self.name)
             && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
-                && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
-                    return (season, episode);
-                }
+            && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
+        {
+            return (season, episode);
+        }
 
         // 1x02 format
         let x_re = Regex::new(r"(?i)(\d{1,2})x(\d{1,3})").unwrap();
         if let Some(caps) = x_re.captures(&self.name)
             && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
-                && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
-                    return (season, episode);
-                }
+            && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
+        {
+            return (season, episode);
+        }
 
         // If no episode pattern found, use large values to sort at end
         (u32::MAX, u32::MAX)
@@ -965,9 +968,10 @@ pub async fn launch_player(
 
     // For VLC, subtitles are handled differently
     if command.contains("vlc")
-        && let Some(sub_url) = subtitle_url {
-            cmd.arg(format!("--sub-file={}", sub_url));
-        }
+        && let Some(sub_url) = subtitle_url
+    {
+        cmd.arg(format!("--sub-file={}", sub_url));
+    }
 
     cmd.args(args);
     cmd.arg(stream_url);

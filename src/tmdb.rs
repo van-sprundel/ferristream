@@ -261,7 +261,11 @@ impl TmdbClient {
     }
 
     /// Helper function to fetch a TMDB list endpoint
-    async fn get_tmdb_list(&self, path: &str, debug_message: &str) -> Result<Vec<SearchResult>, TmdbError> {
+    async fn get_tmdb_list(
+        &self,
+        path: &str,
+        debug_message: &str,
+    ) -> Result<Vec<SearchResult>, TmdbError> {
         let url = format!("{}{}?api_key={}", self.base_url, path, self.api_key);
 
         debug!(debug_message);
@@ -272,20 +276,26 @@ impl TmdbClient {
 
     /// Get popular movies
     pub async fn get_popular_movies(&self) -> Result<Vec<SearchResult>, TmdbError> {
-        self.get_tmdb_list("/3/movie/popular", "fetching popular movies").await
+        self.get_tmdb_list("/3/movie/popular", "fetching popular movies")
+            .await
     }
 
     /// Get popular TV shows
     pub async fn get_popular_tv(&self) -> Result<Vec<SearchResult>, TmdbError> {
-        let mut results = self.get_tmdb_list("/3/tv/popular", "fetching popular TV shows").await?;
+        let mut results = self
+            .get_tmdb_list("/3/tv/popular", "fetching popular TV shows")
+            .await?;
         // Set media_type for TV shows since the endpoint doesn't return it
-        results.iter_mut().for_each(|r| r.media_type = Some("tv".to_string()));
+        results
+            .iter_mut()
+            .for_each(|r| r.media_type = Some("tv".to_string()));
         Ok(results)
     }
 
     /// Get upcoming movies
     pub async fn get_upcoming(&self) -> Result<Vec<SearchResult>, TmdbError> {
-        self.get_tmdb_list("/3/movie/upcoming", "fetching upcoming movies").await
+        self.get_tmdb_list("/3/movie/upcoming", "fetching upcoming movies")
+            .await
     }
 
     /// Discover mixed content for recommendations
@@ -407,9 +417,10 @@ pub fn parse_torrent_title(torrent_name: &str) -> (String, Option<u16>) {
 
     // Remove everything after the year (usually quality info)
     if let Some(y) = year
-        && let Some(idx) = name.find(&y.to_string()) {
-            name = name[..idx].to_string();
-        }
+        && let Some(idx) = name.find(&y.to_string())
+    {
+        name = name[..idx].to_string();
+    }
 
     // Remove quality patterns
     for pattern in quality_patterns {

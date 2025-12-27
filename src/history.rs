@@ -61,10 +61,11 @@ impl WatchHistory {
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent) {
-                error!("failed to create history directory: {}", e);
-                return;
-            }
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            error!("failed to create history directory: {}", e);
+            return;
+        }
 
         match serde_json::to_string_pretty(self) {
             Ok(contents) => {

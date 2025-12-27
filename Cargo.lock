@@ -798,6 +798,7 @@ dependencies = [
  "crossterm",
  "directories",
  "discord-rich-presence",
+ "futures",
  "librqbit",
  "quick-xml 0.38.4",
  "ratatui",

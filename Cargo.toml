@@ -36,6 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 regex = "1"
 which = "8"
 discord-rich-presence = "1.0"
+futures = "0.3"
 
 [dev-dependencies]
 wiremock = "0.6"
