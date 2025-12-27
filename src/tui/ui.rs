@@ -267,7 +267,7 @@ fn draw_discovery(frame: &mut Frame, app: &App) {
         let available_height = chunks[1].height;
 
         // Calculate row height, ensuring it's at least MIN_ROW_HEIGHT
-        let row_height = (available_height / row_count as u16).max(MIN_ROW_HEIGHT);
+        let row_height = if row_count > 0 { (available_height / row_count as u16).max(1) } else { 0 };
 
         let row_constraints: Vec<Constraint> = (0..row_count)
             .map(|_| Constraint::Length(row_height))
