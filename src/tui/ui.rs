@@ -266,7 +266,7 @@ fn draw_discovery(frame: &mut Frame, app: &App) {
         let row_count = app.discovery_rows.len();
         let available_height = chunks[1].height;
 
-        // Calculate row height, ensuring it's at least MIN_ROW_HEIGHT
+        // Calculate row height, ensuring it's at least 1 to be visible
         let row_height = if row_count > 0 {
             (available_height / row_count as u16).max(1)
         } else {
