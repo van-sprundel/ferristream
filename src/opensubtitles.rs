@@ -333,7 +333,10 @@ mod integration_tests {
         assert_eq!(subtitles.len(), 1);
         assert_eq!(subtitles[0].language, "en");
         assert_eq!(subtitles[0].file_name, "movie.en.srt");
-        assert_eq!(subtitles[0].download_url, "https://example.com/download/subtitle.srt");
+        assert_eq!(
+            subtitles[0].download_url,
+            "https://example.com/download/subtitle.srt"
+        );
     }
 
     #[tokio::test]
@@ -501,7 +504,10 @@ mod integration_tests {
         assert_eq!(subtitles.len(), 1);
         assert_eq!(subtitles[0].language, "es");
         assert_eq!(subtitles[0].file_name, "pelicula.es.srt");
-        assert_eq!(subtitles[0].download_url, "https://example.com/download/spanish.srt");
+        assert_eq!(
+            subtitles[0].download_url,
+            "https://example.com/download/spanish.srt"
+        );
     }
 
     #[tokio::test]
@@ -549,7 +555,7 @@ mod integration_tests {
                 .and(path("/api/v1/download"))
                 .and(body_json(serde_json::json!({"file_id": i})))
                 .respond_with(ResponseTemplate::new(200).set_body_json(
-                    serde_json::json!({"link": format!("https://example.com/sub{}.srt", i)})
+                    serde_json::json!({"link": format!("https://example.com/sub{}.srt", i)}),
                 ))
                 .mount(&mock_server)
                 .await;
