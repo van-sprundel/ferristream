@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
 };
 use unicode_truncate::UnicodeTruncateStr;
+use unicode_width::UnicodeWidthStr;
 
 use crate::doctor::CheckStatus;
 
@@ -413,7 +414,7 @@ fn draw_search(frame: &mut Frame, app: &App) {
     // Show cursor in search input
     if !app.is_searching {
         frame.set_cursor_position((
-            chunks[1].x + app.search_input.len() as u16 + 1,
+            chunks[1].x + app.search_input.width() as u16 + 1,
             chunks[1].y + 1,
         ));
     }

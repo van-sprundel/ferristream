@@ -39,6 +39,7 @@ discord-rich-presence = "1.0"
 futures = "0.3"
 itertools = "0.13"
 unicode-truncate = "2.0"
+unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
