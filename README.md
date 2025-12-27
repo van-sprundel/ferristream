@@ -8,16 +8,29 @@ Sometimes I just want to try out a movie/series without having to download their
 
 ## Installation
 
-Download the latest binary from [Releases](https://github.com/van-sprundel/ferristream/releases).
+### Quick Install (Recommended)
 
-Or install with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) (recommended, downloads pre-built binary):
+**macOS/Linux:**
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/van-sprundel/ferristream/releases/latest/download/ferristream-installer.sh | sh
+```
 
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/van-sprundel/ferristream/releases/latest/download/ferristream-installer.ps1 | iex"
+```
+
+### Alternative Methods
+
+**cargo-binstall** (downloads pre-built binary):
 ```bash
 cargo binstall ferristream
 ```
 
-Or build from source:
+**Manual download:**
+Download the latest binary from [Releases](https://github.com/van-sprundel/ferristream/releases).
 
+**Build from source:**
 ```bash
 cargo install --git https://github.com/van-sprundel/ferristream
 ```
