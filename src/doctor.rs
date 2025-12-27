@@ -222,3 +222,281 @@ pub fn print_results(results: &[CheckResult]) {
         println!("  All checks passed!\n");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        DiscordConfig, ExtensionsConfig, PlayerConfig, ProwlarrConfig, StorageConfig,
+        StreamingConfig, SubtitlesConfig, TmdbConfig, TraktConfig,
+    };
+
+    #[test]
+    fn test_check_result_ok() {
+        let result = CheckResult::ok("Test", "Everything is fine");
+        assert_eq!(result.name, "Test");
+        assert_eq!(result.message, "Everything is fine");
+        assert!(matches!(result.status, CheckStatus::Ok));
+    }
+
+    #[test]
+    fn test_check_result_warning() {
+        let result = CheckResult::warning("Test", "Minor issue");
+        assert_eq!(result.name, "Test");
+        assert_eq!(result.message, "Minor issue");
+        assert!(matches!(result.status, CheckStatus::Warning));
+    }
+
+    #[test]
+    fn test_check_result_error() {
+        let result = CheckResult::error("Test", "Critical failure");
+        assert_eq!(result.name, "Test");
+        assert_eq!(result.message, "Critical failure");
+        assert!(matches!(result.status, CheckStatus::Error));
+    }
+
+    #[test]
+    fn test_check_result_icon() {
+        let ok = CheckResult::ok("Test", "");
+        assert_eq!(ok.icon(), "✓");
+
+        let warning = CheckResult::warning("Test", "");
+        assert_eq!(warning.icon(), "⚠");
+
+        let error = CheckResult::error("Test", "");
+        assert_eq!(error.icon(), "✗");
+    }
+
+    #[test]
+    fn test_check_result_color() {
+        let ok = CheckResult::ok("Test", "");
+        assert_eq!(ok.color(), "\x1b[32m"); // green
+
+        let warning = CheckResult::warning("Test", "");
+        assert_eq!(warning.color(), "\x1b[33m"); // yellow
+
+        let error = CheckResult::error("Test", "");
+        assert_eq!(error.color(), "\x1b[31m"); // red
+    }
+
+    #[test]
+    fn test_check_discord_with_app_id() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "test".to_string(),
+            },
+            tmdb: None,
+            player: PlayerConfig::default(),
+            storage: StorageConfig::default(),
+            subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
+            extensions: ExtensionsConfig {
+                discord: DiscordConfig {
+                    enabled: true,
+                    app_id: Some("123456".to_string()),
+                },
+                trakt: TraktConfig::default(),
+            },
+        };
+
+        let result = check_discord(&config);
+        assert!(matches!(result.status, CheckStatus::Ok));
+        assert!(result.message.contains("app ID"));
+    }
+
+    #[test]
+    fn test_check_discord_without_app_id() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "test".to_string(),
+            },
+            tmdb: None,
+            player: PlayerConfig::default(),
+            storage: StorageConfig::default(),
+            subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
+            extensions: ExtensionsConfig {
+                discord: DiscordConfig {
+                    enabled: true,
+                    app_id: None,
+                },
+                trakt: TraktConfig::default(),
+            },
+        };
+
+        let result = check_discord(&config);
+        assert!(matches!(result.status, CheckStatus::Ok));
+        assert!(result.message.contains("no app_id"));
+    }
+
+    #[tokio::test]
+    async fn test_check_trakt_no_client_id() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "test".to_string(),
+            },
+            tmdb: None,
+            player: PlayerConfig::default(),
+            storage: StorageConfig::default(),
+            subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
+            extensions: ExtensionsConfig {
+                discord: DiscordConfig::default(),
+                trakt: TraktConfig {
+                    enabled: true,
+                    client_id: None,
+                    access_token: None,
+                },
+            },
+        };
+
+        let result = check_trakt(&config).await;
+        assert!(matches!(result.status, CheckStatus::Error));
+        assert!(result.message.contains("no client_id"));
+    }
+
+    #[tokio::test]
+    async fn test_check_trakt_no_access_token() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "test".to_string(),
+            },
+            tmdb: None,
+            player: PlayerConfig::default(),
+            storage: StorageConfig::default(),
+            subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
+            extensions: ExtensionsConfig {
+                discord: DiscordConfig::default(),
+                trakt: TraktConfig {
+                    enabled: true,
+                    client_id: Some("client123".to_string()),
+                    access_token: None,
+                },
+            },
+        };
+
+        let result = check_trakt(&config).await;
+        assert!(matches!(result.status, CheckStatus::Warning));
+        assert!(result.message.contains("access_token"));
+    }
+
+    #[tokio::test]
+    async fn test_check_trakt_fully_configured() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "test".to_string(),
+            },
+            tmdb: None,
+            player: PlayerConfig::default(),
+            storage: StorageConfig::default(),
+            subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
+            extensions: ExtensionsConfig {
+                discord: DiscordConfig::default(),
+                trakt: TraktConfig {
+                    enabled: true,
+                    client_id: Some("client123".to_string()),
+                    access_token: Some("token456".to_string()),
+                },
+            },
+        };
+
+        let result = check_trakt(&config).await;
+        assert!(matches!(result.status, CheckStatus::Ok));
+        assert!(result.message.contains("access token"));
+    }
+
+    #[test]
+    fn test_check_player_not_found() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "test".to_string(),
+            },
+            tmdb: None,
+            player: PlayerConfig {
+                command: "nonexistent_player_xyz_123".to_string(),
+                args: vec![],
+            },
+            storage: StorageConfig::default(),
+            subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
+            extensions: ExtensionsConfig::default(),
+        };
+
+        let result = check_player(&config);
+        assert!(matches!(result.status, CheckStatus::Error));
+        assert!(result.message.contains("not found"));
+    }
+
+    #[test]
+    fn test_check_storage_creates_directory() {
+        use std::env;
+
+        let temp_base = env::temp_dir();
+        let test_dir = temp_base.join("ferristream_test_doctor").join("new_dir");
+
+        // Ensure directory doesn't exist
+        let _ = std::fs::remove_dir_all(&test_dir);
+
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "test".to_string(),
+            },
+            tmdb: None,
+            player: PlayerConfig::default(),
+            storage: StorageConfig {
+                temp_dir: Some(test_dir.clone()),
+            },
+            subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
+            extensions: ExtensionsConfig::default(),
+        };
+
+        let result = check_storage(&config);
+        assert!(matches!(result.status, CheckStatus::Ok));
+        assert!(test_dir.exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_check_storage_existing_writable() {
+        use std::env;
+
+        let temp_base = env::temp_dir();
+        let test_dir = temp_base.join("ferristream_test_doctor").join("existing");
+
+        // Create directory
+        std::fs::create_dir_all(&test_dir).unwrap();
+
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "test".to_string(),
+            },
+            tmdb: None,
+            player: PlayerConfig::default(),
+            storage: StorageConfig {
+                temp_dir: Some(test_dir.clone()),
+            },
+            subtitles: SubtitlesConfig::default(),
+            streaming: StreamingConfig::default(),
+            extensions: ExtensionsConfig::default(),
+        };
+
+        let result = check_storage(&config);
+        assert!(matches!(result.status, CheckStatus::Ok));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+}

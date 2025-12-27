@@ -158,3 +158,273 @@ impl WatchHistory {
         self.entries.retain(|_, e| e.last_watched >= cutoff);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_key_with_tmdb_id() {
+        let key = WatchHistory::make_key(Some(12345), "ignored_filename.mkv");
+        assert_eq!(key, "tmdb:12345");
+    }
+
+    #[test]
+    fn test_make_key_without_tmdb_id() {
+        let key = WatchHistory::make_key(None, "Some.Movie.2024.mkv");
+        assert_eq!(key, "file:Some.Movie.2024.mkv");
+    }
+
+    #[test]
+    fn test_make_key_sanitizes_filename() {
+        let key = WatchHistory::make_key(None, "/path/to/file:name.mkv");
+        assert_eq!(key, "file:_path_to_file_name.mkv");
+    }
+
+    #[test]
+    fn test_make_key_windows_paths() {
+        let key = WatchHistory::make_key(None, "C:\\Users\\Name\\video.mp4");
+        // C:\ -> C__ (colon + backslash both replaced)
+        // \ -> _ (backslash replaced)
+        assert_eq!(key, "file:C__Users_Name_video.mp4");
+    }
+
+    #[test]
+    fn test_update_progress() {
+        let mut history = WatchHistory::default();
+
+        history.update("tmdb:123".to_string(), "Test Movie".to_string(), 50.0);
+
+        let entry = history.get("tmdb:123").unwrap();
+        assert_eq!(entry.progress_percent, 50.0);
+        assert_eq!(entry.title, "Test Movie");
+        assert!(entry.last_watched > 0);
+    }
+
+    #[test]
+    fn test_update_overwrites_existing() {
+        let mut history = WatchHistory::default();
+
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 25.0);
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 75.0);
+
+        let entry = history.get("tmdb:123").unwrap();
+        assert_eq!(entry.progress_percent, 75.0);
+    }
+
+    #[test]
+    fn test_is_finished_above_threshold() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 95.0);
+
+        assert!(history.is_finished("tmdb:123", 90.0));
+    }
+
+    #[test]
+    fn test_is_finished_at_threshold() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 90.0);
+
+        assert!(history.is_finished("tmdb:123", 90.0));
+    }
+
+    #[test]
+    fn test_is_finished_below_threshold() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 80.0);
+
+        assert!(!history.is_finished("tmdb:123", 90.0));
+    }
+
+    #[test]
+    fn test_is_finished_not_found() {
+        let history = WatchHistory::default();
+        assert!(!history.is_finished("tmdb:999", 90.0));
+    }
+
+    #[test]
+    fn test_has_resume_point_in_range() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 50.0);
+
+        let resume = history.has_resume_point("tmdb:123");
+        assert_eq!(resume, Some(50.0));
+    }
+
+    #[test]
+    fn test_has_resume_point_too_low() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 3.0);
+
+        let resume = history.has_resume_point("tmdb:123");
+        assert_eq!(resume, None);
+    }
+
+    #[test]
+    fn test_has_resume_point_at_lower_bound() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 5.0);
+
+        let resume = history.has_resume_point("tmdb:123");
+        assert_eq!(resume, Some(5.0));
+    }
+
+    #[test]
+    fn test_has_resume_point_too_high() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 95.0);
+
+        let resume = history.has_resume_point("tmdb:123");
+        assert_eq!(resume, None);
+    }
+
+    #[test]
+    fn test_has_resume_point_at_upper_bound() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 89.9);
+
+        let resume = history.has_resume_point("tmdb:123");
+        assert_eq!(resume, Some(89.9));
+    }
+
+    #[test]
+    fn test_has_resume_point_exactly_90() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 90.0);
+
+        let resume = history.has_resume_point("tmdb:123");
+        assert_eq!(resume, None); // Should be excluded at 90%
+    }
+
+    #[test]
+    fn test_has_resume_point_not_found() {
+        let history = WatchHistory::default();
+        assert_eq!(history.has_resume_point("tmdb:999"), None);
+    }
+
+    #[test]
+    fn test_clear_entry() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Movie".to_string(), 50.0);
+
+        assert!(history.get("tmdb:123").is_some());
+
+        history.clear("tmdb:123");
+
+        assert!(history.get("tmdb:123").is_none());
+    }
+
+    #[test]
+    fn test_clear_nonexistent() {
+        let mut history = WatchHistory::default();
+        // Should not panic
+        history.clear("tmdb:999");
+    }
+
+    #[test]
+    fn test_cleanup_old_entries() {
+        let mut history = WatchHistory::default();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Add recent entry
+        history.entries.insert(
+            "recent".to_string(),
+            WatchEntry {
+                progress_percent: 50.0,
+                last_watched: now - (1 * 24 * 60 * 60), // 1 day ago
+                title: "Recent".to_string(),
+            },
+        );
+
+        // Add old entry
+        history.entries.insert(
+            "old".to_string(),
+            WatchEntry {
+                progress_percent: 50.0,
+                last_watched: now - (31 * 24 * 60 * 60), // 31 days ago
+                title: "Old".to_string(),
+            },
+        );
+
+        history.cleanup_old(30); // Keep entries from last 30 days
+
+        assert!(history.get("recent").is_some());
+        assert!(history.get("old").is_none());
+    }
+
+    #[test]
+    fn test_cleanup_old_boundary() {
+        let mut history = WatchHistory::default();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Add entry exactly at the cutoff
+        history.entries.insert(
+            "boundary".to_string(),
+            WatchEntry {
+                progress_percent: 50.0,
+                last_watched: now - (30 * 24 * 60 * 60), // Exactly 30 days ago
+                title: "Boundary".to_string(),
+            },
+        );
+
+        history.cleanup_old(30);
+
+        // Entry at exactly the cutoff should be kept
+        assert!(history.get("boundary").is_some());
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let mut history = WatchHistory::default();
+        history.update("tmdb:123".to_string(), "Test Movie".to_string(), 67.5);
+        history.update(
+            "file:video.mkv".to_string(),
+            "Local Video".to_string(),
+            42.0,
+        );
+
+        let json = serde_json::to_string(&history).unwrap();
+        let parsed: WatchHistory = serde_json::from_str(&json).unwrap();
+
+        let entry1 = parsed.get("tmdb:123").unwrap();
+        assert_eq!(entry1.title, "Test Movie");
+        assert_eq!(entry1.progress_percent, 67.5);
+
+        let entry2 = parsed.get("file:video.mkv").unwrap();
+        assert_eq!(entry2.title, "Local Video");
+        assert_eq!(entry2.progress_percent, 42.0);
+    }
+
+    #[test]
+    fn test_default_history_is_empty() {
+        let history = WatchHistory::default();
+        assert!(history.get("any_key").is_none());
+    }
+
+    #[test]
+    fn test_multiple_entries() {
+        let mut history = WatchHistory::default();
+
+        for i in 1..=5 {
+            history.update(
+                format!("tmdb:{}", i),
+                format!("Movie {}", i),
+                i as f64 * 20.0,
+            );
+        }
+
+        for i in 1..=5 {
+            let entry = history.get(&format!("tmdb:{}", i)).unwrap();
+            assert_eq!(entry.title, format!("Movie {}", i));
+            assert_eq!(entry.progress_percent, i as f64 * 20.0);
+        }
+    }
+}

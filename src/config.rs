@@ -242,3 +242,297 @@ impl Default for Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_validation_empty_url() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: String::new(),
+                apikey: "test-key".to_string(),
+            },
+            ..Default::default()
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ConfigError::ValidationError(_))));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("prowlarr.url cannot be empty")
+        );
+    }
+
+    #[test]
+    fn test_config_validation_invalid_url_scheme() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "ftp://localhost:9696".to_string(),
+                apikey: "test-key".to_string(),
+            },
+            ..Default::default()
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must start with http:// or https://")
+        );
+    }
+
+    #[test]
+    fn test_config_validation_no_scheme() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "localhost:9696".to_string(),
+                apikey: "test-key".to_string(),
+            },
+            ..Default::default()
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_validation_empty_apikey() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("prowlarr.apikey cannot be empty")
+        );
+    }
+
+    #[test]
+    fn test_config_validation_valid() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696".to_string(),
+                apikey: "valid-key".to_string(),
+            },
+            ..Default::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_validation_https_url() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "https://prowlarr.example.com".to_string(),
+                apikey: "valid-key".to_string(),
+            },
+            ..Default::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_parse_valid_toml() {
+        let toml = r#"
+            [prowlarr]
+            url = "http://localhost:9696"
+            apikey = "test-key"
+
+            [tmdb]
+            apikey = "tmdb-key"
+
+            [player]
+            command = "vlc"
+            args = ["--fullscreen"]
+
+            [subtitles]
+            enabled = true
+            language = "es"
+
+            [streaming]
+            auto_race = 5
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.prowlarr.url, "http://localhost:9696");
+        assert_eq!(config.prowlarr.apikey, "test-key");
+        assert!(config.tmdb.is_some());
+        assert_eq!(config.tmdb.unwrap().apikey, "tmdb-key");
+        assert_eq!(config.player.command, "vlc");
+        assert_eq!(config.player.args, vec!["--fullscreen"]);
+        assert_eq!(config.subtitles.language, "es");
+        assert_eq!(config.streaming.auto_race, 5);
+    }
+
+    #[test]
+    fn test_config_parse_minimal_toml() {
+        let toml = r#"
+            [prowlarr]
+            url = "http://localhost:9696"
+            apikey = "test-key"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.prowlarr.url, "http://localhost:9696");
+        assert_eq!(config.prowlarr.apikey, "test-key");
+        assert!(config.tmdb.is_none());
+    }
+
+    #[test]
+    fn test_config_parse_invalid_toml() {
+        let toml = r#"
+            [prowlarr]
+            url = "http://localhost:9696"
+            # missing apikey
+        "#;
+
+        let result: Result<Config, _> = toml::from_str(toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_default_values() {
+        let config = Config::default();
+        assert_eq!(config.prowlarr.url, "http://localhost:9696");
+        assert_eq!(config.prowlarr.apikey, "");
+        assert_eq!(config.player.command, "mpv");
+        assert!(config.player.args.is_empty());
+        assert_eq!(config.subtitles.language, "en");
+        assert!(config.subtitles.enabled);
+        assert_eq!(config.streaming.auto_race, 10);
+        assert!(config.extensions.discord.app_id.is_none());
+        assert!(!config.extensions.discord.enabled);
+        assert!(config.extensions.trakt.client_id.is_none());
+        assert!(!config.extensions.trakt.enabled);
+    }
+
+    #[test]
+    fn test_player_config_default() {
+        let player = PlayerConfig::default();
+        assert_eq!(player.command, "mpv");
+        assert!(player.args.is_empty());
+    }
+
+    #[test]
+    fn test_subtitles_config_default() {
+        let subtitles = SubtitlesConfig::default();
+        assert!(subtitles.enabled);
+        assert_eq!(subtitles.language, "en");
+        assert!(subtitles.opensubtitles_api_key.is_none());
+    }
+
+    #[test]
+    fn test_streaming_config_default() {
+        let streaming = StreamingConfig::default();
+        assert_eq!(streaming.auto_race, 10);
+    }
+
+    #[test]
+    fn test_storage_temp_dir_default() {
+        let storage = StorageConfig::default();
+        let temp_dir = storage.temp_dir();
+        assert!(temp_dir.to_str().unwrap().contains("ferristream"));
+    }
+
+    #[test]
+    fn test_storage_temp_dir_custom() {
+        let storage = StorageConfig {
+            temp_dir: Some(PathBuf::from("/custom/path")),
+        };
+        assert_eq!(storage.temp_dir(), PathBuf::from("/custom/path"));
+    }
+
+    #[test]
+    fn test_config_serialization_roundtrip() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "https://prowlarr.example.com".to_string(),
+                apikey: "my-api-key".to_string(),
+            },
+            tmdb: Some(TmdbConfig {
+                apikey: "tmdb-key".to_string(),
+            }),
+            player: PlayerConfig {
+                command: "vlc".to_string(),
+                args: vec!["--fullscreen".to_string(), "--no-video-title".to_string()],
+            },
+            subtitles: SubtitlesConfig {
+                enabled: false,
+                language: "fr".to_string(),
+                opensubtitles_api_key: Some("os-key".to_string()),
+            },
+            streaming: StreamingConfig { auto_race: 5 },
+            storage: StorageConfig {
+                temp_dir: Some(PathBuf::from("/tmp/test")),
+            },
+            extensions: ExtensionsConfig {
+                discord: DiscordConfig {
+                    enabled: true,
+                    app_id: Some("discord-id".to_string()),
+                },
+                trakt: TraktConfig {
+                    enabled: true,
+                    client_id: Some("trakt-id".to_string()),
+                    access_token: Some("trakt-token".to_string()),
+                },
+            },
+        };
+
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(parsed.prowlarr.url, config.prowlarr.url);
+        assert_eq!(parsed.prowlarr.apikey, config.prowlarr.apikey);
+        assert_eq!(
+            parsed.tmdb.as_ref().unwrap().apikey,
+            config.tmdb.as_ref().unwrap().apikey
+        );
+        assert_eq!(parsed.player.command, config.player.command);
+        assert_eq!(parsed.player.args, config.player.args);
+        assert_eq!(parsed.subtitles.enabled, config.subtitles.enabled);
+        assert_eq!(parsed.subtitles.language, config.subtitles.language);
+        assert_eq!(parsed.streaming.auto_race, config.streaming.auto_race);
+        assert_eq!(parsed.storage.temp_dir, config.storage.temp_dir);
+    }
+
+    #[test]
+    fn test_extensions_config_default() {
+        let extensions = ExtensionsConfig::default();
+        assert!(!extensions.discord.enabled);
+        assert!(extensions.discord.app_id.is_none());
+        assert!(!extensions.trakt.enabled);
+        assert!(extensions.trakt.client_id.is_none());
+        assert!(extensions.trakt.access_token.is_none());
+    }
+
+    #[test]
+    fn test_config_with_trailing_slash() {
+        let config = Config {
+            prowlarr: ProwlarrConfig {
+                url: "http://localhost:9696/".to_string(),
+                apikey: "test-key".to_string(),
+            },
+            ..Default::default()
+        };
+
+        // Should pass validation (trailing slash is handled)
+        assert!(config.validate().is_ok());
+    }
+}
