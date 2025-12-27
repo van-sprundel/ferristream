@@ -82,6 +82,33 @@ const POPULAR_TV_ITEM_COUNT: usize = 10;
 const UPCOMING_ROW_ITEM_COUNT: usize = 20;
 const FOR_YOU_ROW_ITEM_COUNT: usize = 20;
 
+/// Helper function to add a discovery row from TMDB API results
+fn add_row_from_results(
+    rows: &mut Vec<DiscoveryRow>,
+    title: &str,
+    api_result: Result<Vec<crate::tmdb::SearchResult>, crate::tmdb::TmdbError>,
+    item_count: usize,
+    error_message: &str,
+) {
+    match api_result {
+        Ok(results) => {
+            if !results.is_empty() {
+                rows.push(DiscoveryRow {
+                    title: title.to_string(),
+                    items: results
+                        .into_iter()
+                        .take(item_count)
+                        .map(DiscoveryItem::from)
+                        .collect(),
+                });
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "{}", error_message);
+        }
+    }
+}
+
 fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
     let tx = tx.clone();
     let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
@@ -108,21 +135,13 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
         );
 
         // Row 1: Trending
-        match trending_res {
-            Ok(results) => {
-                rows.push(DiscoveryRow {
-                    title: "Trending This Week".to_string(),
-                    items: results
-                        .into_iter()
-                        .take(TRENDING_ROW_ITEM_COUNT)
-                        .map(DiscoveryItem::from)
-                        .collect(),
-                });
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load trending content");
-            }
-        }
+        add_row_from_results(
+            &mut rows,
+            "Trending This Week",
+            trending_res,
+            TRENDING_ROW_ITEM_COUNT,
+            "failed to load trending content",
+        );
 
         // Row 2: Popular (combine movies + TV)
         let mut popular_items = Vec::new();
@@ -159,38 +178,22 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
         }
 
         // Row 3: Upcoming
-        match upcoming_res {
-            Ok(results) => {
-                rows.push(DiscoveryRow {
-                    title: "Upcoming Releases".to_string(),
-                    items: results
-                        .into_iter()
-                        .take(UPCOMING_ROW_ITEM_COUNT)
-                        .map(DiscoveryItem::from)
-                        .collect(),
-                });
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load upcoming releases");
-            }
-        }
+        add_row_from_results(
+            &mut rows,
+            "Upcoming Releases",
+            upcoming_res,
+            UPCOMING_ROW_ITEM_COUNT,
+            "failed to load upcoming releases",
+        );
 
         // Row 4: For You (use discover)
-        match discover_res {
-            Ok(results) => {
-                rows.push(DiscoveryRow {
-                    title: "For You".to_string(),
-                    items: results
-                        .into_iter()
-                        .take(FOR_YOU_ROW_ITEM_COUNT)
-                        .map(DiscoveryItem::from)
-                        .collect(),
-                });
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load recommendations");
-            }
-        }
+        add_row_from_results(
+            &mut rows,
+            "For You",
+            discover_res,
+            FOR_YOU_ROW_ITEM_COUNT,
+            "failed to load recommendations",
+        );
 
         if rows.is_empty() {
             let _ = tx
@@ -237,21 +240,22 @@ fn spawn_torrent_search(
                 }
 
                 // Run searches in parallel with limited concurrency
-                let search_futures = indexers.iter().map(|indexer| {
-                    let torznab = &torznab;
-                    let prowlarr_config = &prowlarr_config;
-                    let search_query = &search_query;
+                let search_futures = indexers.into_iter().map(|indexer| {
+                    let prowlarr_url = prowlarr_config.url.clone();
+                    let prowlarr_apikey = prowlarr_config.apikey.clone();
+                    let search_query = search_query.clone();
                     let indexer_name = indexer.name.clone();
                     let indexer_id = indexer.id;
 
                     async move {
+                        let torznab = TorznabClient::new();
                         let result = torznab
                             .search(
-                                &prowlarr_config.url,
-                                &prowlarr_config.apikey,
+                                &prowlarr_url,
+                                &prowlarr_apikey,
                                 indexer_id,
                                 &indexer_name,
-                                search_query,
+                                &search_query,
                                 Some(VIDEO_CATEGORIES),
                             )
                             .await;
