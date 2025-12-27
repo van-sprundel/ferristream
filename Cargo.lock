@@ -817,6 +817,7 @@ dependencies = [
  "unicode-truncate",
  "url",
  "urlencoding",
+ "uuid 1.19.0",
  "which",
  "wiremock",
 ]

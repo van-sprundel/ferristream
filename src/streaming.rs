@@ -109,13 +109,17 @@ pub struct StreamingSession {
 
 impl StreamingSession {
     pub async fn new(temp_dir: PathBuf) -> Result<Self, StreamError> {
-        tokio::fs::create_dir_all(&temp_dir)
+        // Create a unique subdirectory for this session to avoid conflicts
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_temp_dir = temp_dir.join(session_id);
+
+        tokio::fs::create_dir_all(&session_temp_dir)
             .await
             .map_err(|e| StreamError::SessionError(e.to_string()))?;
 
         debug!("creating librqbit session");
         let session_future = Session::new_with_opts(
-            temp_dir.clone(),
+            session_temp_dir.clone(),
             SessionOptions {
                 // Re-enable DHT - needed for magnet resolution
                 disable_dht: false,
@@ -160,7 +164,7 @@ impl StreamingSession {
                 .redirect(reqwest::redirect::Policy::none()) // we handle these redirects manually
                 .build()
                 .unwrap(),
-            temp_dir,
+            temp_dir: session_temp_dir,
         })
     }
 
