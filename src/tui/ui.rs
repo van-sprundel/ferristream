@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
 };
+use unicode_truncate::UnicodeTruncateStr;
 
 use crate::doctor::CheckStatus;
 
@@ -327,7 +328,11 @@ fn draw_discovery(frame: &mut Frame, app: &App) {
                     .unwrap_or_default();
 
                 let text = format!(" {}{}{}{} ", media_icon, item.title, year_str, rating_str);
-                spans.push(Span::styled(text, style));
+                let (text, _) = text.unicode_truncate(DISCOVERY_ITEM_WIDTH as usize);
+                spans.push(Span::styled(
+                    format!("{:<width$}", text, width = DISCOVERY_ITEM_WIDTH as usize),
+                    style,
+                ));
                 spans.push(Span::raw("  "));
             }
 

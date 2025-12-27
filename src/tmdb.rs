@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use reqwest::Client;
 use serde::Deserialize;
 use thiserror::Error;
@@ -334,25 +335,12 @@ impl TmdbClient {
             }
         )?;
 
-        // Interleave results (movie, tv, movie, tv, ...) without cloning
-        let mut results = Vec::new();
-        let mut movies_iter = movies_response.results.into_iter();
-        let mut tv_iter = tv_response.results.into_iter();
-
-        loop {
-            let mut added_any = false;
-            if let Some(movie) = movies_iter.next() {
-                results.push(movie);
-                added_any = true;
-            }
-            if let Some(tv) = tv_iter.next() {
-                results.push(tv);
-                added_any = true;
-            }
-            if !added_any {
-                break;
-            }
-        }
+        // Interleave results (movie, tv, movie, tv, ...)
+        let results: Vec<_> = movies_response
+            .results
+            .into_iter()
+            .interleave(tv_response.results.into_iter())
+            .collect();
 
         Ok(results)
     }
