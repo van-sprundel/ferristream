@@ -277,9 +277,11 @@ impl TmdbClient {
 
         debug!("fetching popular TV shows");
 
-        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
+        let mut response: SearchResponse = self.client.get(&url).send().await?.json().await?;
+        response.results.iter_mut().for_each(|r| r.media_type = Some("tv".to_string()));
 
         Ok(response.results)
+    }
     }
 
     /// Get upcoming movies
