@@ -4,6 +4,16 @@ pub mod trakt;
 pub use discord::DiscordExtension;
 pub use trakt::TraktExtension;
 
+use once_cell::sync::Lazy;
+use regex::Regex;
+
+// Compiled regexes for episode parsing (compiled once at startup)
+static SXEX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap());
+static X_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(\d{1,2})x(\d{1,3})").unwrap());
+static FULL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)season[.\s]*(\d{1,2}).*episode[.\s]*(\d{1,3})").unwrap());
+static COMPACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.\s](\d{1,2})(\d{2})[.\s]").unwrap());
+
 /// Information about the currently playing media
 #[derive(Debug, Clone)]
 pub struct MediaInfo {
@@ -32,11 +42,8 @@ pub struct MediaInfo {
 /// - Season 1 Episode 2
 /// - .102. (season 1, episode 02)
 pub fn parse_episode_info(filename: &str) -> (Option<u32>, Option<u32>) {
-    use regex::Regex;
-
     // S01E02, S1E2 format (most common)
-    let sxex_re = Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap();
-    if let Some(caps) = sxex_re.captures(filename)
+    if let Some(caps) = SXEX_RE.captures(filename)
         && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
         && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
     {
@@ -44,8 +51,7 @@ pub fn parse_episode_info(filename: &str) -> (Option<u32>, Option<u32>) {
     }
 
     // 1x02, 01x02 format
-    let x_re = Regex::new(r"(?i)(\d{1,2})x(\d{1,3})").unwrap();
-    if let Some(caps) = x_re.captures(filename)
+    if let Some(caps) = X_RE.captures(filename)
         && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
         && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
     {
@@ -53,8 +59,7 @@ pub fn parse_episode_info(filename: &str) -> (Option<u32>, Option<u32>) {
     }
 
     // Season 1 Episode 2 format (also handles dots instead of spaces)
-    let full_re = Regex::new(r"(?i)season[.\s]*(\d{1,2}).*episode[.\s]*(\d{1,3})").unwrap();
-    if let Some(caps) = full_re.captures(filename)
+    if let Some(caps) = FULL_RE.captures(filename)
         && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
         && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
     {
@@ -63,8 +68,7 @@ pub fn parse_episode_info(filename: &str) -> (Option<u32>, Option<u32>) {
 
     // .102. or .1002. format (season 1, episode 02 or season 10, episode 02)
     // Must be surrounded by dots/spaces to avoid matching years
-    let compact_re = Regex::new(r"[.\s](\d{1,2})(\d{2})[.\s]").unwrap();
-    if let Some(caps) = compact_re.captures(filename)
+    if let Some(caps) = COMPACT_RE.captures(filename)
         && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
         && let (Ok(season), Ok(episode)) = (s.as_str().parse::<u32>(), e.as_str().parse::<u32>())
     {

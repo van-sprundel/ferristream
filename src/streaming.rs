@@ -7,12 +7,19 @@ use std::time::Duration;
 use librqbit::api::Api;
 use librqbit::http_api::{HttpApi, HttpApiOptions};
 use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use reqwest::Client;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{debug, info};
+
+// Compiled regexes for episode parsing (compiled once at startup)
+static EPISODE_SXEX_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap());
+static EPISODE_X_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(\d{1,2})x(\d{1,3})").unwrap());
 
 #[derive(Error, Debug)]
 pub enum StreamError {
@@ -860,11 +867,8 @@ pub struct VideoFile {
 impl VideoFile {
     /// Extract season and episode numbers from filename for sorting
     pub fn episode_sort_key(&self) -> (u32, u32) {
-        use regex::Regex;
-
         // S01E02 format
-        let sxex_re = Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap();
-        if let Some(caps) = sxex_re.captures(&self.name)
+        if let Some(caps) = EPISODE_SXEX_RE.captures(&self.name)
             && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
             && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
         {
@@ -872,8 +876,7 @@ impl VideoFile {
         }
 
         // 1x02 format
-        let x_re = Regex::new(r"(?i)(\d{1,2})x(\d{1,3})").unwrap();
-        if let Some(caps) = x_re.captures(&self.name)
+        if let Some(caps) = EPISODE_X_RE.captures(&self.name)
             && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
             && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
         {
@@ -1224,5 +1227,234 @@ mod tests {
         let v = TorrentValidation::new(vec!["spider".to_string(), "man".to_string()], Some(2021));
         assert!(v.matches("Spider-Man.No.Way.Home.2021.mkv"));
         assert!(v.matches("The.Amazing.Spider-Man.2021.mkv")); // "spider" matches
+    }
+
+    #[test]
+    fn test_torrent_validation_empty_keywords() {
+        // Empty keywords should match everything (year still applies)
+        let v = TorrentValidation::new(vec![], Some(2024));
+        assert!(v.matches("Anything.2024.mkv"));
+        assert!(!v.matches("Anything.2023.mkv"));
+
+        // Empty keywords, no year - matches everything
+        let v = TorrentValidation::new(vec![], None);
+        assert!(v.matches("Anything.mkv"));
+        assert!(v.matches("Random.File.2024.mkv"));
+    }
+
+    #[test]
+    fn test_torrent_validation_case_insensitive() {
+        let v = TorrentValidation::new(vec!["matrix".to_string()], Some(1999));
+        assert!(v.matches("The.MATRIX.1999.mkv"));
+        assert!(v.matches("matrix.1999.mkv"));
+        assert!(v.matches("MATRIX.1999.MKV"));
+    }
+
+    #[test]
+    fn test_torrent_validation_partial_match() {
+        let v = TorrentValidation::new(vec!["inception".to_string()], Some(2010));
+        assert!(v.matches("Inception.2010.1080p.mkv"));
+        // Should match if keyword is substring
+        assert!(v.matches("The.Inception.Of.Dreams.2010.mkv"));
+    }
+
+    #[test]
+    fn test_extract_keywords_filters_short_words() {
+        let kw = TorrentValidation::extract_keywords("Go To It Now");
+        assert!(!kw.contains(&"go".to_string())); // Too short (2 chars)
+        assert!(!kw.contains(&"to".to_string())); // Stop word
+        assert!(!kw.contains(&"it".to_string())); // Too short
+        assert!(kw.contains(&"now".to_string())); // 3 chars minimum
+    }
+
+    #[test]
+    fn test_extract_keywords_handles_special_chars() {
+        let kw = TorrentValidation::extract_keywords("Batman: The Dark Knight!");
+        assert!(kw.contains(&"batman".to_string()));
+        assert!(kw.contains(&"dark".to_string()));
+        assert!(kw.contains(&"knight".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keywords_filters_years() {
+        // 4-digit numbers should be filtered out
+        let kw = TorrentValidation::extract_keywords("Movie 2024 2023 1999");
+        assert!(!kw.contains(&"2024".to_string()));
+        assert!(!kw.contains(&"2023".to_string()));
+        assert!(!kw.contains(&"1999".to_string()));
+
+        // But non-year numbers are OK
+        let kw = TorrentValidation::extract_keywords("Apollo 13 Mission");
+        assert!(kw.contains(&"apollo".to_string()));
+        assert!(kw.contains(&"mission".to_string()));
+        // "13" is filtered (too short)
+    }
+
+    #[test]
+    fn test_episode_sort_key_1x02_format() {
+        let file = VideoFile {
+            name: "Show.1x05.720p.mkv".to_string(),
+            file_idx: 0,
+            size: 1000,
+            stream_url: String::new(),
+        };
+        assert_eq!(file.episode_sort_key(), (1, 5));
+    }
+
+    #[test]
+    fn test_episode_sort_key_no_pattern() {
+        let file = VideoFile {
+            name: "Movie.2024.1080p.mkv".to_string(),
+            file_idx: 0,
+            size: 1000,
+            stream_url: String::new(),
+        };
+        // Should return max values when no episode pattern found
+        assert_eq!(file.episode_sort_key(), (u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn test_episode_sort_key_double_digit_season() {
+        let file = VideoFile {
+            name: "Show.S12E34.mkv".to_string(),
+            file_idx: 0,
+            size: 1000,
+            stream_url: String::new(),
+        };
+        assert_eq!(file.episode_sort_key(), (12, 34));
+    }
+
+    #[test]
+    fn test_video_file_extensions() {
+        assert!(is_video_file("test.mp4"));
+        assert!(is_video_file("test.mkv"));
+        assert!(is_video_file("test.avi"));
+        assert!(is_video_file("test.mov"));
+        assert!(is_video_file("test.wmv"));
+        assert!(is_video_file("test.flv"));
+        assert!(is_video_file("test.webm"));
+        assert!(is_video_file("test.m4v"));
+
+        // Case insensitive
+        assert!(is_video_file("test.MKV"));
+        assert!(is_video_file("test.Mp4"));
+    }
+
+    #[test]
+    fn test_subtitle_file_extensions() {
+        assert!(is_subtitle_file("test.srt"));
+        assert!(is_subtitle_file("test.ass"));
+        assert!(is_subtitle_file("test.ssa"));
+        assert!(is_subtitle_file("test.sub"));
+        assert!(is_subtitle_file("test.vtt"));
+
+        // Case insensitive
+        assert!(is_subtitle_file("test.SRT"));
+        assert!(is_subtitle_file("test.Ass"));
+    }
+
+    #[test]
+    fn test_extract_subtitle_language_dotted_format() {
+        assert_eq!(
+            extract_subtitle_language("Movie.en.srt"),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            extract_subtitle_language("Movie.es.srt"),
+            Some("es".to_string())
+        );
+        assert_eq!(
+            extract_subtitle_language("Movie.fr.srt"),
+            Some("fr".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_subtitle_language_priority() {
+        // Should match first pattern found (english before eng before .en.)
+        let result = extract_subtitle_language("Movie.english.eng.en.srt");
+        assert_eq!(result, Some("en".to_string()));
+    }
+
+    #[test]
+    fn test_extract_subtitle_language_case_insensitive() {
+        assert_eq!(
+            extract_subtitle_language("Movie.ENGLISH.srt"),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            extract_subtitle_language("Movie.ENG.srt"),
+            Some("en".to_string())
+        );
+    }
+
+    #[test]
+    fn test_calculate_progress() {
+        assert_eq!(calculate_progress(50.0, 100.0), 50.0);
+        assert_eq!(calculate_progress(0.0, 100.0), 0.0);
+        assert_eq!(calculate_progress(100.0, 100.0), 100.0);
+        assert_eq!(calculate_progress(150.0, 100.0), 100.0); // Clamped to 100
+        assert_eq!(calculate_progress(50.0, 0.0), 0.0); // Division by zero guard
+    }
+
+    #[test]
+    fn test_sort_episodes_mixed_seasons() {
+        let mut files = vec![
+            VideoFile {
+                name: "Show.S02E01.mkv".to_string(),
+                file_idx: 0,
+                size: 1000,
+                stream_url: String::new(),
+            },
+            VideoFile {
+                name: "Show.S01E03.mkv".to_string(),
+                file_idx: 1,
+                size: 1000,
+                stream_url: String::new(),
+            },
+            VideoFile {
+                name: "Show.S01E01.mkv".to_string(),
+                file_idx: 2,
+                size: 1000,
+                stream_url: String::new(),
+            },
+        ];
+
+        sort_episodes(&mut files);
+
+        assert!(files[0].name.contains("S01E01"));
+        assert!(files[1].name.contains("S01E03"));
+        assert!(files[2].name.contains("S02E01"));
+    }
+
+    #[test]
+    fn test_sort_episodes_movies_at_end() {
+        let mut files = vec![
+            VideoFile {
+                name: "Movie.2024.mkv".to_string(),
+                file_idx: 0,
+                size: 1000,
+                stream_url: String::new(),
+            },
+            VideoFile {
+                name: "Show.S01E02.mkv".to_string(),
+                file_idx: 1,
+                size: 1000,
+                stream_url: String::new(),
+            },
+            VideoFile {
+                name: "Show.S01E01.mkv".to_string(),
+                file_idx: 2,
+                size: 1000,
+                stream_url: String::new(),
+            },
+        ];
+
+        sort_episodes(&mut files);
+
+        // Episodes should come first, movie last (u32::MAX sort key)
+        assert!(files[0].name.contains("S01E01"));
+        assert!(files[1].name.contains("S01E02"));
+        assert!(files[2].name.contains("Movie"));
     }
 }
