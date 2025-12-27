@@ -327,7 +327,7 @@ impl From<TmdbResult> for DiscoveryItem {
             media_type: result
                 .media_type
                 .clone()
-                .unwrap_or_else(|| "movie".to_string()),
+                .expect("media_type should be set on all TmdbResult before conversion"),
             poster_url: result.poster_url("w300"),
             overview: result.overview,
             rating: result.vote_average,
