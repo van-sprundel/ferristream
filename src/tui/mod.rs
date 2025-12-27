@@ -1193,6 +1193,8 @@ async fn run_app(
                     }
                     KeyCode::Char('s') => {
                         app.view = View::Settings;
+                        app.settings_section = SettingsSection::default();
+                        app.settings_field_index = 0;
                     }
                     KeyCode::Char('d') => {
                         app.view = View::Doctor;
@@ -1360,6 +1362,7 @@ async fn run_app(
                         // Open settings view
                         app.view = View::Settings;
                         app.settings_section = SettingsSection::default();
+                        app.settings_field_index = 0;
                     }
                     KeyCode::Tab if !app.suggestions.is_empty() => {
                         // Accept selected suggestion

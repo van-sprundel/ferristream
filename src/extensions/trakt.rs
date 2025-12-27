@@ -92,12 +92,12 @@ impl TraktExtension {
                     })
                 }
                 _ => {
-                    tracing::debug!(
+                    tracing::warn!(
                         title = %media.title,
                         filename = %media.file_name,
-                        "trakt: no episode info found in filename"
+                        "trakt: cannot scrobble TV show without episode info"
                     );
-                    None
+                    return None;
                 }
             };
 

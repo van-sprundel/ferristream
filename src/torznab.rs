@@ -194,8 +194,16 @@ impl TorznabClient {
                             "seeders" => item.seeders = attr_value.parse().ok(),
                             "leechers" => item.leechers = attr_value.parse().ok(),
                             "size" => item.size = attr_value.parse().ok(),
-                            "magneturl" => item.magnet_url = Some(attr_value),
-                            "infohash" => item.infohash = Some(attr_value),
+                            "magneturl" => {
+                                if !attr_value.trim().is_empty() {
+                                    item.magnet_url = Some(attr_value);
+                                }
+                            }
+                            "infohash" => {
+                                if !attr_value.trim().is_empty() {
+                                    item.infohash = Some(attr_value);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -485,5 +493,75 @@ mod tests {
         let results = client.parse_response(xml, "Test").unwrap();
 
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_empty_magneturl_should_not_override_valid_link() {
+        // When magneturl attribute is present but empty, it should not
+        // take priority over a valid download link
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Test Movie 2024</title>
+      <link>http://example.com/download.torrent</link>
+      <torznab:attr name="magneturl" value=""/>
+    </item>
+  </channel>
+</rss>"#;
+
+        let client = TorznabClient::new();
+        let results = client.parse_response(xml, "TestIndexer").unwrap();
+
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+
+        // magnet_url should be None, not Some("")
+        assert_eq!(result.magnet_url, None);
+        assert_eq!(
+            result.link,
+            Some("http://example.com/download.torrent".to_string())
+        );
+
+        // Get the torrent URL - this should return the valid link
+        let url = result.get_torrent_url();
+        assert_eq!(
+            url,
+            Some("http://example.com/download.torrent".to_string()),
+            "Expected to get the valid download link, not empty string"
+        );
+    }
+
+    #[test]
+    fn test_empty_infohash_should_not_create_invalid_magnet() {
+        // When infohash attribute is present but empty, it should not
+        // create an invalid magnet URL
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Test Movie 2024</title>
+      <link>http://example.com/download.torrent</link>
+      <torznab:attr name="infohash" value=""/>
+    </item>
+  </channel>
+</rss>"#;
+
+        let client = TorznabClient::new();
+        let results = client.parse_response(xml, "TestIndexer").unwrap();
+
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+
+        // infohash should be None, not Some("")
+        assert_eq!(result.infohash, None);
+
+        // Get the torrent URL - should fall back to the valid link
+        let url = result.get_torrent_url();
+        assert_eq!(
+            url,
+            Some("http://example.com/download.torrent".to_string()),
+            "Expected to get the valid download link, not construct invalid magnet"
+        );
     }
 }

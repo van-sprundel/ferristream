@@ -801,6 +801,7 @@ dependencies = [
  "futures",
  "itertools 0.13.0",
  "librqbit",
+ "once_cell",
  "quick-xml 0.38.4",
  "ratatui",
  "regex",
@@ -815,8 +816,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-truncate",
+ "unicode-width",
  "url",
  "urlencoding",
+ "uuid 1.19.0",
  "which",
  "wiremock",
 ]

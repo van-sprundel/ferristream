@@ -1,4 +1,6 @@
 use itertools::Itertools;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 use thiserror::Error;
@@ -8,6 +10,9 @@ use tracing::debug;
 // Users can override with their own key in config if needed
 // At compile time, set TMDB_API_KEY env var to embed it, otherwise users must provide in config
 const EMBEDDED_API_KEY: Option<&str> = option_env!("TMDB_API_KEY");
+
+// Compiled regex for year extraction (compiled once at startup)
+static YEAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(19|20)\d{2}\b").unwrap());
 
 #[derive(Error, Debug)]
 pub enum TmdbError {
@@ -398,10 +403,7 @@ pub fn parse_torrent_title(torrent_name: &str) -> (String, Option<u16>) {
     name = name.replace(['.', '_'], " ");
 
     // Try to find a year (1900-2099)
-    let year_regex = regex::Regex::new(r"\b(19|20)\d{2}\b").ok();
-    let year: Option<u16> = year_regex
-        .and_then(|re| re.find(&name))
-        .and_then(|m| m.as_str().parse().ok());
+    let year: Option<u16> = YEAR_RE.find(&name).and_then(|m| m.as_str().parse().ok());
 
     // Remove everything after the year (usually quality info)
     if let Some(y) = year

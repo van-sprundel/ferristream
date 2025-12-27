@@ -54,8 +54,15 @@ pub struct SubtitleDownload {
 
 impl OpenSubtitlesClient {
     pub fn new(api_key: &str) -> Self {
+        let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
+        let client = Client::builder()
+            .user_agent(user_agent)
+            .build()
+            .expect("Failed to build HTTP client");
+
         Self {
-            client: Client::new(),
+            client,
             api_key: api_key.to_string(),
         }
     }
