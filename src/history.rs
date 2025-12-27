@@ -102,10 +102,13 @@ impl WatchHistory {
 
     /// Update watch progress
     pub fn update(&mut self, key: String, title: String, progress_percent: f64) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(e) => {
+                error!("failed to get system time, skipping history update: {}", e);
+                return;
+            }
+        };
 
         self.entries.insert(
             key,
@@ -143,10 +146,13 @@ impl WatchHistory {
 
     /// Clear entries older than given days
     pub fn cleanup_old(&mut self, days: u64) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(e) => {
+                error!("failed to get system time, skipping cleanup: {}", e);
+                return;
+            }
+        };
         let cutoff = now.saturating_sub(days * 24 * 60 * 60);
 
         self.entries.retain(|_, e| e.last_watched >= cutoff);
