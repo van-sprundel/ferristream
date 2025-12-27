@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use reqwest::Client;
 use serde::Deserialize;
 use thiserror::Error;
@@ -241,6 +242,108 @@ impl TmdbClient {
 
         Ok(response)
     }
+
+    /// Get trending content (movies + TV)
+    pub async fn get_trending(
+        &self,
+        media_type: &str,
+        time_window: &str,
+    ) -> Result<Vec<SearchResult>, TmdbError> {
+        let url = format!(
+            "{}/3/trending/{}/{}?api_key={}",
+            self.base_url, media_type, time_window, self.api_key
+        );
+
+        debug!(media_type, time_window, "fetching trending content");
+
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
+
+        Ok(response.results)
+    }
+
+    /// Helper function to fetch a TMDB list endpoint
+    async fn get_tmdb_list(
+        &self,
+        path: &str,
+        debug_message: &str,
+    ) -> Result<Vec<SearchResult>, TmdbError> {
+        let url = format!("{}{}?api_key={}", self.base_url, path, self.api_key);
+
+        debug!(debug_message);
+
+        let response: SearchResponse = self.client.get(&url).send().await?.json().await?;
+        Ok(response.results)
+    }
+
+    /// Get popular movies
+    pub async fn get_popular_movies(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        self.get_tmdb_list("/3/movie/popular", "fetching popular movies")
+            .await
+    }
+
+    /// Get popular TV shows
+    pub async fn get_popular_tv(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        let mut results = self
+            .get_tmdb_list("/3/tv/popular", "fetching popular TV shows")
+            .await?;
+        // Set media_type for TV shows since the endpoint doesn't return it
+        results
+            .iter_mut()
+            .for_each(|r| r.media_type = Some("tv".to_string()));
+        Ok(results)
+    }
+
+    /// Get upcoming movies
+    pub async fn get_upcoming(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        self.get_tmdb_list("/3/movie/upcoming", "fetching upcoming movies")
+            .await
+    }
+
+    /// Discover mixed content for recommendations
+    pub async fn discover_mixed(&self) -> Result<Vec<SearchResult>, TmdbError> {
+        // Get movies
+        let movies_url = format!(
+            "{}/3/discover/movie?api_key={}&sort_by=popularity.desc",
+            self.base_url, self.api_key
+        );
+
+        // Get TV shows
+        let tv_url = format!(
+            "{}/3/discover/tv?api_key={}&sort_by=popularity.desc",
+            self.base_url, self.api_key
+        );
+
+        debug!("fetching discover content");
+
+        // Fetch both in parallel
+        let (movies_response, tv_response) = tokio::try_join!(
+            async {
+                self.client
+                    .get(&movies_url)
+                    .send()
+                    .await?
+                    .json::<SearchResponse>()
+                    .await
+            },
+            async {
+                self.client
+                    .get(&tv_url)
+                    .send()
+                    .await?
+                    .json::<SearchResponse>()
+                    .await
+            }
+        )?;
+
+        // Interleave results (movie, tv, movie, tv, ...)
+        let results: Vec<_> = movies_response
+            .results
+            .into_iter()
+            .interleave(tv_response.results.into_iter())
+            .collect();
+
+        Ok(results)
+    }
 }
 
 /// Try to extract a clean title and year from a torrent name
@@ -302,9 +405,10 @@ pub fn parse_torrent_title(torrent_name: &str) -> (String, Option<u16>) {
 
     // Remove everything after the year (usually quality info)
     if let Some(y) = year
-        && let Some(idx) = name.find(&y.to_string()) {
-            name = name[..idx].to_string();
-        }
+        && let Some(idx) = name.find(&y.to_string())
+    {
+        name = name[..idx].to_string();
+    }
 
     // Remove quality patterns
     for pattern in quality_patterns {

@@ -38,39 +38,41 @@ pub fn parse_episode_info(filename: &str) -> (Option<u32>, Option<u32>) {
     let sxex_re = Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap();
     if let Some(caps) = sxex_re.captures(filename)
         && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
-            && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
-                return (Some(season), Some(episode));
-            }
+        && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
+    {
+        return (Some(season), Some(episode));
+    }
 
     // 1x02, 01x02 format
     let x_re = Regex::new(r"(?i)(\d{1,2})x(\d{1,3})").unwrap();
     if let Some(caps) = x_re.captures(filename)
         && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
-            && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
-                return (Some(season), Some(episode));
-            }
+        && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
+    {
+        return (Some(season), Some(episode));
+    }
 
     // Season 1 Episode 2 format (also handles dots instead of spaces)
     let full_re = Regex::new(r"(?i)season[.\s]*(\d{1,2}).*episode[.\s]*(\d{1,3})").unwrap();
     if let Some(caps) = full_re.captures(filename)
         && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
-            && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse()) {
-                return (Some(season), Some(episode));
-            }
+        && let (Ok(season), Ok(episode)) = (s.as_str().parse(), e.as_str().parse())
+    {
+        return (Some(season), Some(episode));
+    }
 
     // .102. or .1002. format (season 1, episode 02 or season 10, episode 02)
     // Must be surrounded by dots/spaces to avoid matching years
     let compact_re = Regex::new(r"[.\s](\d)(\d{2})[.\s]").unwrap();
     if let Some(caps) = compact_re.captures(filename)
         && let (Some(s), Some(e)) = (caps.get(1), caps.get(2))
-            && let (Ok(season), Ok(episode)) =
-                (s.as_str().parse::<u32>(), e.as_str().parse::<u32>())
-            {
-                // Only valid if episode isn't too high (avoid matching years like 1999)
-                if (1..=99).contains(&season) && (1..=99).contains(&episode) {
-                    return (Some(season), Some(episode));
-                }
-            }
+        && let (Ok(season), Ok(episode)) = (s.as_str().parse::<u32>(), e.as_str().parse::<u32>())
+    {
+        // Only valid if episode isn't too high (avoid matching years like 1999)
+        if (1..=99).contains(&season) && (1..=99).contains(&episode) {
+            return (Some(season), Some(episode));
+        }
+    }
 
     (None, None)
 }
