@@ -11,8 +11,14 @@ ci = "github"
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# Publish prereleases to GitHub Releases
+# Which actions to run on pull requests
 pr-run-mode = "upload"
+# Custom build setup for environment variables
+github-build-setup = "build-setup.yml"
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
 
 # Install NASM on Windows for aws-lc-sys (used by rustls)
 [dist.github-custom-runners]
