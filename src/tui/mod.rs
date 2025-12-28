@@ -2209,16 +2209,16 @@ async fn run_app(
                             if !app.trakt_auth_code_input.is_empty()
                                 && let Some(client_id) =
                                     config.extensions.trakt.get_client_id().map(String::from)
-                                {
-                                    let client_secret = config
-                                        .extensions
-                                        .trakt
-                                        .client_secret
-                                        .clone()
-                                        .unwrap_or_default();
-                                    let code = app.trakt_auth_code_input.trim().to_string();
-                                    exchange_trakt_code(&tx, client_id, client_secret, code);
-                                }
+                            {
+                                let client_secret = config
+                                    .extensions
+                                    .trakt
+                                    .client_secret
+                                    .clone()
+                                    .unwrap_or_default();
+                                let code = app.trakt_auth_code_input.trim().to_string();
+                                exchange_trakt_code(&tx, client_id, client_secret, code);
+                            }
                         }
                         KeyCode::Char(c) => {
                             // Type characters into code input
