@@ -16,6 +16,7 @@ pkg-fmt = "tgz"
 pkg-fmt = "zip"
 
 [dependencies]
+chrono = "0.4"
 librqbit = { version = "8.1.1", default-features = false, features = ["http-api", "tracing-subscriber-utils", "rust-tls"] }
 ratatui = "0.30.0"
 crossterm = "0.29"

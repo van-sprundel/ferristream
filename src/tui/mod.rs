@@ -28,6 +28,7 @@ use crate::prowlarr::ProwlarrClient;
 use crate::streaming::{self, StreamingSession, TorrentValidation, VideoFile, sort_episodes};
 use crate::tmdb::{TmdbClient, parse_torrent_title};
 use crate::torznab::{TorrentResult, TorznabClient};
+use crate::trakt::TraktClient;
 
 /// Messages sent from background tasks to the UI
 pub enum UiMessage {
@@ -68,6 +69,23 @@ pub enum UiMessage {
     },
     /// Discovery loading failed
     DiscoveryError(String),
+    /// Trakt device code received
+    TraktDeviceCode {
+        user_code: String,
+        verification_url: String,
+        device_code: String,
+        interval: u32,
+    },
+    /// Trakt auth completed successfully
+    TraktAuthComplete {
+        access_token: String,
+        refresh_token: String,
+        expires_in: u64,
+    },
+    /// Trakt auth error
+    TraktAuthError(String),
+    /// Trakt auth still pending (user hasn't approved yet)
+    TraktAuthPending,
 }
 
 fn restore_terminal() {
@@ -75,125 +93,128 @@ fn restore_terminal() {
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
-// Discovery row item count constants
-const TRENDING_ROW_ITEM_COUNT: usize = 20;
-const POPULAR_MOVIES_ITEM_COUNT: usize = 10;
-const POPULAR_TV_ITEM_COUNT: usize = 10;
-const UPCOMING_ROW_ITEM_COUNT: usize = 20;
-const FOR_YOU_ROW_ITEM_COUNT: usize = 20;
-
-/// Helper function to add a discovery row from TMDB API results
-fn add_row_from_results(
-    rows: &mut Vec<DiscoveryRow>,
-    title: &str,
-    api_result: Result<Vec<crate::tmdb::SearchResult>, crate::tmdb::TmdbError>,
-    item_count: usize,
-    error_message: &str,
-) {
-    match api_result {
-        Ok(results) => {
-            if !results.is_empty() {
-                rows.push(DiscoveryRow {
-                    title: title.to_string(),
-                    items: results
-                        .into_iter()
-                        .take(item_count)
-                        .map(DiscoveryItem::from)
-                        .collect(),
-                });
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "{}", error_message);
-        }
-    }
-}
+// Discovery row limits
+const WATCHLIST_ITEM_COUNT: usize = 20;
+const CALENDAR_DAYS: u32 = 7;
+const RECOMMENDATIONS_ITEM_COUNT: usize = 20;
+const TRENDING_ITEM_COUNT: usize = 10;
 
 fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
     let tx = tx.clone();
-    let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+    let trakt_config = config.extensions.trakt.clone();
 
     tokio::spawn(async move {
-        let Some(client) = TmdbClient::new(tmdb_apikey.as_deref()) else {
+        let mut rows = Vec::new();
+
+        // Check if we have Trakt credentials
+        let Some(client_id) = trakt_config.client_id.clone() else {
             let _ = tx
                 .send(UiMessage::DiscoveryError(
-                    "TMDB API key not configured".to_string(),
+                    "Trakt not configured. Go to Settings → Trakt to set up.".to_string(),
                 ))
                 .await;
             return;
         };
 
-        let mut rows = Vec::new();
+        if trakt_config.is_authenticated() && !trakt_config.is_token_expired() {
+            // Authenticated: fetch personalized content
+            let client = TraktClient::authenticated(
+                client_id,
+                trakt_config.access_token.clone().unwrap_or_default(),
+            );
 
-        // Fetch all data in parallel for better performance
-        let (trending_res, popular_movies_res, popular_tv_res, upcoming_res, discover_res) = tokio::join!(
-            client.get_trending("all", "week"),
-            client.get_popular_movies(),
-            client.get_popular_tv(),
-            client.get_upcoming(),
-            client.discover_mixed()
-        );
+            // Fetch all data in parallel
+            let (watchlist_res, calendar_res, rec_shows_res, rec_movies_res) = tokio::join!(
+                client.get_watchlist(),
+                client.get_calendar(CALENDAR_DAYS),
+                client.get_show_recommendations(),
+                client.get_movie_recommendations()
+            );
 
-        // Row 1: Trending
-        add_row_from_results(
-            &mut rows,
-            "Trending This Week",
-            trending_res,
-            TRENDING_ROW_ITEM_COUNT,
-            "failed to load trending content",
-        );
-
-        // Row 2: Popular (combine movies + TV)
-        let mut popular_items = Vec::new();
-        match popular_movies_res {
-            Ok(movies) => {
-                popular_items.extend(
-                    movies
+            // Row 1: Watchlist
+            match watchlist_res {
+                Ok(watchlist) => {
+                    let items: Vec<DiscoveryItem> = TraktClient::watchlist_to_discovery(watchlist)
                         .into_iter()
-                        .take(POPULAR_MOVIES_ITEM_COUNT)
-                        .map(DiscoveryItem::from),
-                );
+                        .take(WATCHLIST_ITEM_COUNT)
+                        .map(DiscoveryItem::from)
+                        .collect();
+                    if !items.is_empty() {
+                        rows.push(DiscoveryRow {
+                            title: "My Watchlist".to_string(),
+                            items,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load Trakt watchlist");
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load popular movies");
+
+            // Row 2: Up Next (calendar)
+            match calendar_res {
+                Ok(calendar) => {
+                    let items: Vec<DiscoveryItem> = TraktClient::calendar_to_discovery(calendar)
+                        .into_iter()
+                        .map(DiscoveryItem::from)
+                        .collect();
+                    if !items.is_empty() {
+                        rows.push(DiscoveryRow {
+                            title: "Up Next".to_string(),
+                            items,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load Trakt calendar");
+                }
             }
-        }
-        match popular_tv_res {
-            Ok(tv) => {
-                popular_items.extend(
-                    tv.into_iter()
-                        .take(POPULAR_TV_ITEM_COUNT)
-                        .map(DiscoveryItem::from),
-                );
+
+            // Row 3: Recommendations
+            let rec_shows = rec_shows_res.unwrap_or_default();
+            let rec_movies = rec_movies_res.unwrap_or_default();
+            let rec_items: Vec<DiscoveryItem> =
+                TraktClient::recommendations_to_discovery(rec_shows, rec_movies)
+                    .into_iter()
+                    .take(RECOMMENDATIONS_ITEM_COUNT)
+                    .map(DiscoveryItem::from)
+                    .collect();
+            if !rec_items.is_empty() {
+                rows.push(DiscoveryRow {
+                    title: "Recommended".to_string(),
+                    items: rec_items,
+                });
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load popular TV shows");
+        } else {
+            // Not authenticated: fetch public trending content
+            let client = TraktClient::new(client_id);
+
+            let (trending_shows_res, trending_movies_res) = tokio::join!(
+                client.get_trending_shows(TRENDING_ITEM_COUNT),
+                client.get_trending_movies(TRENDING_ITEM_COUNT)
+            );
+
+            let trending_shows = trending_shows_res.unwrap_or_default();
+            let trending_movies = trending_movies_res.unwrap_or_default();
+            let trending_items: Vec<DiscoveryItem> =
+                TraktClient::trending_to_discovery(trending_shows, trending_movies)
+                    .into_iter()
+                    .map(DiscoveryItem::from)
+                    .collect();
+
+            if !trending_items.is_empty() {
+                rows.push(DiscoveryRow {
+                    title: "Trending".to_string(),
+                    items: trending_items,
+                });
             }
-        }
-        if !popular_items.is_empty() {
+
+            // Add a hint row about authentication
             rows.push(DiscoveryRow {
-                title: "Popular".to_string(),
-                items: popular_items,
+                title: "Connect Trakt for personalized content".to_string(),
+                items: vec![],
             });
         }
-
-        // Row 3: Upcoming
-        add_row_from_results(
-            &mut rows,
-            "Upcoming Releases",
-            upcoming_res,
-            UPCOMING_ROW_ITEM_COUNT,
-            "failed to load upcoming releases",
-        );
-
-        // Row 4: For You (use discover)
-        add_row_from_results(
-            &mut rows,
-            "For You",
-            discover_res,
-            FOR_YOU_ROW_ITEM_COUNT,
-            "failed to load recommendations",
-        );
 
         if rows.is_empty() {
             let _ = tx
@@ -203,6 +224,97 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
                 .await;
         } else {
             let _ = tx.send(UiMessage::DiscoveryLoaded { rows }).await;
+        }
+    });
+}
+
+/// Start Trakt device authentication flow
+fn start_trakt_auth(tx: &mpsc::Sender<UiMessage>, client_id: String) {
+    let tx = tx.clone();
+
+    tokio::spawn(async move {
+        let client = TraktClient::new(client_id);
+
+        match client.device_code().await {
+            Ok(code) => {
+                let _ = tx
+                    .send(UiMessage::TraktDeviceCode {
+                        user_code: code.user_code,
+                        verification_url: code.verification_url,
+                        device_code: code.device_code,
+                        interval: code.interval,
+                    })
+                    .await;
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(UiMessage::TraktAuthError(format!(
+                        "Failed to get device code: {}",
+                        e
+                    )))
+                    .await;
+            }
+        }
+    });
+}
+
+/// Poll for Trakt device token
+fn poll_trakt_auth(
+    tx: &mpsc::Sender<UiMessage>,
+    client_id: String,
+    device_code: String,
+    interval: u32,
+) {
+    let tx = tx.clone();
+
+    tokio::spawn(async move {
+        let client = TraktClient::new(client_id);
+        let poll_interval = Duration::from_secs(interval as u64);
+
+        loop {
+            tokio::time::sleep(poll_interval).await;
+
+            match client.device_token(&device_code).await {
+                Ok(token) => {
+                    let _ = tx
+                        .send(UiMessage::TraktAuthComplete {
+                            access_token: token.access_token,
+                            refresh_token: token.refresh_token,
+                            expires_in: token.expires_in,
+                        })
+                        .await;
+                    break;
+                }
+                Err(crate::trakt::TraktError::AuthPending) => {
+                    // Keep polling
+                    let _ = tx.send(UiMessage::TraktAuthPending).await;
+                }
+                Err(crate::trakt::TraktError::DeviceCodeExpired) => {
+                    let _ = tx
+                        .send(UiMessage::TraktAuthError(
+                            "Device code expired. Please try again.".to_string(),
+                        ))
+                        .await;
+                    break;
+                }
+                Err(crate::trakt::TraktError::AccessDenied) => {
+                    let _ = tx
+                        .send(UiMessage::TraktAuthError(
+                            "Access denied. Please try again.".to_string(),
+                        ))
+                        .await;
+                    break;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(UiMessage::TraktAuthError(format!(
+                            "Authentication failed: {}",
+                            e
+                        )))
+                        .await;
+                    break;
+                }
+            }
         }
     });
 }
@@ -605,6 +717,60 @@ async fn run_app(
                 UiMessage::DiscoveryError(e) => {
                     app.is_loading_discovery = false;
                     app.discovery_error = Some(e);
+                }
+                UiMessage::TraktDeviceCode {
+                    user_code,
+                    verification_url,
+                    device_code,
+                    interval,
+                } => {
+                    app.trakt_user_code = Some(user_code);
+                    app.trakt_verification_url = Some(verification_url);
+                    app.trakt_auth_polling = true;
+                    app.trakt_auth_error = None;
+                    // Start polling for auth completion
+                    if let Some(client_id) = config.extensions.trakt.client_id.clone() {
+                        poll_trakt_auth(&tx, client_id, device_code, interval);
+                    }
+                }
+                UiMessage::TraktAuthComplete {
+                    access_token,
+                    refresh_token,
+                    expires_in,
+                } => {
+                    // Save tokens to config
+                    config.extensions.trakt.access_token = Some(access_token);
+                    config.extensions.trakt.refresh_token = Some(refresh_token);
+                    config.extensions.trakt.enabled = true;
+                    // Calculate expiry timestamp
+                    let expires_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64 + expires_in as i64)
+                        .ok();
+                    config.extensions.trakt.expires_at = expires_at;
+                    // Save config
+                    if let Err(e) = config.save() {
+                        error!("Failed to save Trakt config: {}", e);
+                    } else {
+                        info!("Trakt authentication saved");
+                    }
+                    // Clear auth state and go back to discovery
+                    app.trakt_auth_polling = false;
+                    app.trakt_user_code = None;
+                    app.trakt_verification_url = None;
+                    app.trakt_auth_error = None;
+                    app.view = View::Discovery;
+                    // Reload discovery with Trakt data
+                    app.is_loading_discovery = true;
+                    load_discovery_data(&tx, config);
+                }
+                UiMessage::TraktAuthError(e) => {
+                    app.trakt_auth_polling = false;
+                    app.trakt_auth_error = Some(e);
+                }
+                UiMessage::TraktAuthPending => {
+                    // Still waiting for user to approve - just keep polling indicator
+                    app.trakt_auth_polling = true;
                 }
                 UiMessage::RacingStatus { count, message } => {
                     app.racing_message = Some(format!("Racing {} torrents: {}", count, message));
@@ -2062,8 +2228,42 @@ async fn run_app(
                                     app.settings_dirty = false;
                                 }
                             }
+                            KeyCode::Char('a') => {
+                                // Start Trakt authentication (only in Trakt section)
+                                if app.settings_section == SettingsSection::Trakt {
+                                    if let Some(client_id) = config.extensions.trakt.client_id.clone() {
+                                        // Save any pending changes first
+                                        if app.settings_dirty {
+                                            if let Err(e) = config.save() {
+                                                error!("Failed to save config before auth: {}", e);
+                                            }
+                                            app.settings_dirty = false;
+                                        }
+                                        // Start auth flow
+                                        app.view = View::TraktAuth;
+                                        app.trakt_user_code = None;
+                                        app.trakt_verification_url = None;
+                                        app.trakt_auth_polling = false;
+                                        app.trakt_auth_error = None;
+                                        start_trakt_auth(&tx, client_id);
+                                    }
+                                }
+                            }
                             _ => {}
                         }
+                    }
+                }
+                View::TraktAuth => {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => {
+                            // Cancel auth and go back to settings
+                            app.trakt_auth_polling = false;
+                            app.trakt_user_code = None;
+                            app.trakt_verification_url = None;
+                            app.trakt_auth_error = None;
+                            app.view = View::Settings;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2132,9 +2332,10 @@ fn get_settings_field_value(app: &App, config: &Config) -> String {
             2 => config
                 .extensions
                 .trakt
-                .access_token
+                .client_secret
                 .clone()
                 .unwrap_or_default(),
+            3 => String::new(), // Status field is read-only
             _ => String::new(),
         },
     }
@@ -2201,9 +2402,10 @@ fn apply_settings_edit(app: &App, config: &mut Config) {
                     if value.is_empty() { None } else { Some(value) };
             }
             2 => {
-                config.extensions.trakt.access_token =
+                config.extensions.trakt.client_secret =
                     if value.is_empty() { None } else { Some(value) };
             }
+            3 => {} // Status field is read-only
             _ => {}
         },
     }

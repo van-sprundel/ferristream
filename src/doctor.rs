@@ -349,6 +349,7 @@ mod tests {
                     enabled: true,
                     client_id: None,
                     access_token: None,
+                    ..Default::default()
                 },
             },
         };
@@ -376,6 +377,7 @@ mod tests {
                     enabled: true,
                     client_id: Some("client123".to_string()),
                     access_token: None,
+                    ..Default::default()
                 },
             },
         };
@@ -403,6 +405,7 @@ mod tests {
                     enabled: true,
                     client_id: Some("client123".to_string()),
                     access_token: Some("token456".to_string()),
+                    ..Default::default()
                 },
             },
         };

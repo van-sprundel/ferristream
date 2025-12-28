@@ -56,7 +56,41 @@ pub struct TraktConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Unix timestamp when the access token expires
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+impl TraktConfig {
+    /// Check if we have valid authentication credentials
+    pub fn is_authenticated(&self) -> bool {
+        self.client_id.is_some() && self.access_token.is_some()
+    }
+
+    /// Check if the access token has expired (or will expire within 5 minutes)
+    pub fn is_token_expired(&self) -> bool {
+        match self.expires_at {
+            Some(expires_at) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                // Consider expired if within 5 minutes of expiry
+                expires_at - now < 300
+            }
+            None => false, // No expiry info, assume valid
+        }
+    }
+
+    /// Check if we have the necessary credentials to refresh the token
+    pub fn can_refresh(&self) -> bool {
+        self.client_id.is_some() && self.client_secret.is_some() && self.refresh_token.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -491,6 +525,7 @@ mod tests {
                     enabled: true,
                     client_id: Some("trakt-id".to_string()),
                     access_token: Some("trakt-token".to_string()),
+                    ..Default::default()
                 },
             },
         };
