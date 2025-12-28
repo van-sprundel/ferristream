@@ -1,6 +1,6 @@
 [package]
 name = "ferristream"
-version = "0.0.16"
+version = "0.0.17"
 edition = "2024"
 description = "A TUI app for streaming torrents on-the-fly"
 license = "MIT"
@@ -10,7 +10,7 @@ categories = ["command-line-utilities", "multimedia"]
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.{ archive-format }"
-pkg-fmt = "tgz"
+pkg-fmt = "txz"  # Changed from "tgz" to match .tar.xz files
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-fmt = "zip"
