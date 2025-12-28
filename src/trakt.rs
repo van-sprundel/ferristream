@@ -165,7 +165,7 @@ impl TraktDiscoveryItem {
 
         Some(Self {
             id: movie.ids.tmdb?,
-            trakt_id: movie.ids.trakt.unwrap_or(0),
+            trakt_id: movie.ids.trakt?,
             title: movie.title.clone(),
             year: movie.year,
             media_type: "movie".to_string(),
