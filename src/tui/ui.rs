@@ -38,6 +38,7 @@ pub fn draw(frame: &mut Frame, app: &App, config: Option<&Config>) {
                 draw_settings(frame, app, cfg);
             }
         }
+        View::TraktAuth => draw_trakt_auth(frame, app),
     }
 }
 
@@ -309,15 +310,34 @@ fn draw_discovery(frame: &mut Frame, app: &App) {
                 let actual_idx = scroll_offset + display_idx;
                 let is_selected = is_selected_row && actual_idx == app.selected_item_index;
 
+                // Apply different styling for unreleased items (dimmed)
                 let style = if is_selected {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                    if item.is_released {
+                        Style::default().fg(Color::Black).bg(Color::Cyan)
+                    } else {
+                        // Selected but unreleased - use darker cyan
+                        Style::default().fg(Color::DarkGray).bg(Color::Cyan)
+                    }
+                } else if !item.is_released {
+                    // Unreleased items are dimmed
+                    Style::default().fg(Color::Rgb(100, 100, 100))
                 } else if is_selected_row {
                     Style::default().fg(Color::White)
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
 
-                let year_str = item.year.map(|y| format!(" ({})", y)).unwrap_or_default();
+                // Show release date for unreleased items
+                let year_str = if !item.is_released {
+                    item.release_date
+                        .as_ref()
+                        .map(|d| format!(" 📅{}", d))
+                        .unwrap_or_else(|| {
+                            item.year.map(|y| format!(" ({})", y)).unwrap_or_default()
+                        })
+                } else {
+                    item.year.map(|y| format!(" ({})", y)).unwrap_or_default()
+                };
                 let media_icon = if item.media_type == "movie" {
                     "🎬"
                 } else {
@@ -1045,10 +1065,21 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
 
     // Build fields with selection highlighting
     let fields: Vec<(&str, String, bool)> = match app.settings_section {
-        SettingsSection::Prowlarr => vec![
-            ("URL", config.prowlarr.url.clone(), false),
-            ("API Key", mask_secret(&config.prowlarr.apikey), true),
-        ],
+        SettingsSection::Prowlarr => {
+            let status = if config.prowlarr.url.is_empty() {
+                "⚠ URL not set".to_string()
+            } else if config.prowlarr.apikey.is_empty() {
+                "⚠ API Key not set".to_string()
+            } else {
+                "✓ Configured (use 'd' for Doctor to test connection)".to_string()
+            };
+
+            vec![
+                ("URL", config.prowlarr.url.clone(), false),
+                ("API Key", mask_secret(&config.prowlarr.apikey), true),
+                ("Status", status, false),
+            ]
+        }
         SettingsSection::Tmdb => vec![(
             "API Key",
             config
@@ -1118,39 +1149,61 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                 false,
             ),
         ],
-        SettingsSection::Trakt => vec![
-            (
-                "Enabled",
-                if config.extensions.trakt.enabled {
-                    "Yes".to_string()
+        SettingsSection::Trakt => {
+            let has_client_id = config.extensions.trakt.get_client_id().is_some();
+            let auth_status = if config.extensions.trakt.is_authenticated() {
+                if config.extensions.trakt.is_token_expired() {
+                    "⚠ Token expired - Enter to re-authenticate".to_string()
                 } else {
-                    "No".to_string()
-                },
-                false,
-            ),
-            (
-                "Client ID",
-                config
-                    .extensions
-                    .trakt
-                    .client_id
-                    .as_ref()
-                    .map(|k| mask_secret(k))
-                    .unwrap_or_else(|| "(not set)".to_string()),
-                true,
-            ),
-            (
-                "Access Token",
-                config
-                    .extensions
-                    .trakt
-                    .access_token
-                    .as_ref()
-                    .map(|k| mask_secret(k))
-                    .unwrap_or_else(|| "(not set)".to_string()),
-                true,
-            ),
-        ],
+                    "✓ Authenticated".to_string()
+                }
+            } else if has_client_id {
+                "Not connected - Enter to authenticate".to_string()
+            } else {
+                "No API credentials available".to_string()
+            };
+
+            vec![
+                (
+                    "Enabled",
+                    if config.extensions.trakt.enabled {
+                        "Yes".to_string()
+                    } else {
+                        "No".to_string()
+                    },
+                    false,
+                ),
+                (
+                    "Client ID",
+                    config
+                        .extensions
+                        .trakt
+                        .client_id
+                        .as_ref()
+                        .map(|k| mask_secret(k))
+                        .unwrap_or_else(|| {
+                            if crate::config::EMBEDDED_TRAKT_CLIENT_ID.is_some() {
+                                "(using embedded)".to_string()
+                            } else {
+                                "(not set)".to_string()
+                            }
+                        }),
+                    true,
+                ),
+                (
+                    "Client Secret",
+                    config
+                        .extensions
+                        .trakt
+                        .client_secret
+                        .as_ref()
+                        .map(|k| mask_secret(k))
+                        .unwrap_or_else(|| "(not set)".to_string()),
+                    true,
+                ),
+                ("Status", auth_status, false),
+            ]
+        }
     };
 
     // Build lines with selection highlighting
@@ -1213,6 +1266,109 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
     };
     let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, content_chunks[1]);
+}
+
+fn draw_trakt_auth(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(0),    // Content
+            Constraint::Length(2), // Help
+        ])
+        .split(frame.area());
+
+    // Title
+    let title = Paragraph::new("Trakt Authentication")
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default().borders(Borders::ALL));
+    frame.render_widget(title, chunks[0]);
+
+    // Content area
+    let content_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(4), // Instructions + URL
+            Constraint::Length(3), // Code input
+            Constraint::Min(0),    // Status / Error
+        ])
+        .split(chunks[1]);
+
+    // Instructions and URL
+    if let Some(url) = &app.trakt_auth_url {
+        let instructions = Paragraph::new(vec![
+            Line::from("A browser window should have opened. If not, visit:"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                url.as_str(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            )]),
+        ])
+        .style(Style::default().fg(Color::White));
+        frame.render_widget(instructions, content_chunks[0]);
+    } else {
+        let instructions = Paragraph::new("Generating authorization URL...")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(instructions, content_chunks[0]);
+    }
+
+    // Code input field
+    let code_display = if app.trakt_auth_code_input.is_empty() {
+        "Paste the authorization code here..."
+    } else {
+        &app.trakt_auth_code_input
+    };
+    let code_style = if app.trakt_auth_code_input.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    };
+    let code_widget = Paragraph::new(code_display).style(code_style).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Authorization Code")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(code_widget, content_chunks[1]);
+
+    // Status / Error
+    let status_text = if let Some(error) = &app.trakt_auth_error {
+        Line::from(vec![
+            Span::styled(
+                "Error: ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(error.as_str(), Style::default().fg(Color::Red)),
+        ])
+    } else if !app.trakt_auth_code_input.is_empty() {
+        Line::from(vec![
+            Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter", Style::default().fg(Color::Green)),
+            Span::styled(" to authenticate", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![Span::styled(
+            "After authorizing, copy the code from Trakt and paste it here",
+            Style::default().fg(Color::DarkGray),
+        )])
+    };
+    let status_widget = Paragraph::new(status_text);
+    frame.render_widget(status_widget, content_chunks[2]);
+
+    // Help
+    let help =
+        Paragraph::new("Enter: submit | Esc: cancel").style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[2]);
 }
 
 /// Mask a secret string, showing only first/last 2 chars

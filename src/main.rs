@@ -9,6 +9,7 @@ mod prowlarr;
 mod streaming;
 mod tmdb;
 mod torznab;
+mod trakt;
 mod tui;
 
 use config::Config;

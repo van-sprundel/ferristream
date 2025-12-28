@@ -16,6 +16,7 @@ pkg-fmt = "tgz"
 pkg-fmt = "zip"
 
 [dependencies]
+chrono = "0.4"
 librqbit = { version = "8.1.1", default-features = false, features = ["http-api", "tracing-subscriber-utils", "rust-tls"] }
 ratatui = "0.30.0"
 crossterm = "0.29"
@@ -42,6 +43,7 @@ once_cell = "1.20"
 unicode-truncate = "2.0"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
+open = "5"
 
 [dev-dependencies]
 wiremock = "0.6"

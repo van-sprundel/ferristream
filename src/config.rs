@@ -56,7 +56,47 @@ pub struct TraktConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Unix timestamp when the access token expires
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+/// Embedded Trakt client ID (set at compile time via TRAKT_CLIENT_ID env var)
+pub const EMBEDDED_TRAKT_CLIENT_ID: Option<&str> = option_env!("TRAKT_CLIENT_ID");
+
+impl TraktConfig {
+    /// Get the client ID to use (user-provided or embedded)
+    pub fn get_client_id(&self) -> Option<&str> {
+        self.client_id.as_deref().or(EMBEDDED_TRAKT_CLIENT_ID)
+    }
+
+    /// Check if we have valid authentication credentials
+    pub fn is_authenticated(&self) -> bool {
+        self.get_client_id().is_some() && self.access_token.is_some()
+    }
+
+    /// Check if the access token has expired (or will expire within 5 minutes)
+    pub fn is_token_expired(&self) -> bool {
+        const FIVE_MINUTES_IN_SECONDS: i64 = 300;
+        match self.expires_at {
+            Some(expires_at) => {
+                let now = ::chrono::Utc::now().timestamp();
+                // Consider expired if within 5 minutes of expiry
+                expires_at - now < FIVE_MINUTES_IN_SECONDS
+            }
+            None => false, // No expiry info, assume valid
+        }
+    }
+
+    /// Check if we have the necessary credentials to refresh the token
+    pub fn can_refresh(&self) -> bool {
+        self.client_id.is_some() && self.client_secret.is_some() && self.refresh_token.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -491,6 +531,7 @@ mod tests {
                     enabled: true,
                     client_id: Some("trakt-id".to_string()),
                     access_token: Some("trakt-token".to_string()),
+                    ..Default::default()
                 },
             },
         };

@@ -20,6 +20,8 @@ pub enum View {
     Streaming,
     Doctor,
     Settings,
+    /// Trakt device authentication flow
+    TraktAuth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -120,13 +122,13 @@ impl SettingsSection {
     /// Number of editable fields in this section
     pub fn field_count(&self) -> usize {
         match self {
-            SettingsSection::Prowlarr => 2,  // url, apikey
+            SettingsSection::Prowlarr => 3,  // url, apikey, status
             SettingsSection::Tmdb => 1,      // apikey
             SettingsSection::Player => 2,    // command, args
             SettingsSection::Streaming => 1, // auto_race
             SettingsSection::Subtitles => 3, // enabled, language, api_key
             SettingsSection::Discord => 2,   // enabled, app_id
-            SettingsSection::Trakt => 3,     // enabled, client_id, access_token
+            SettingsSection::Trakt => 4,     // enabled, client_id, client_secret, status
         }
     }
 
@@ -299,6 +301,11 @@ pub struct App {
     pub selected_item_index: usize,
     pub is_loading_discovery: bool,
     pub discovery_error: Option<String>,
+
+    // Trakt authentication (Authorization Code flow)
+    pub trakt_auth_url: Option<String>,
+    pub trakt_auth_code_input: String,
+    pub trakt_auth_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +323,10 @@ pub struct DiscoveryItem {
     pub poster_url: Option<String>,
     pub overview: Option<String>,
     pub rating: Option<f64>,
+    /// Whether the item has been released (for visual distinction)
+    pub is_released: bool,
+    /// Release date string (for display)
+    pub release_date: Option<String>,
 }
 
 impl From<TmdbResult> for DiscoveryItem {
@@ -334,6 +345,27 @@ impl From<TmdbResult> for DiscoveryItem {
             poster_url: result.poster_url("w300"),
             overview: result.overview,
             rating: result.vote_average,
+            is_released: true, // TMDB items are assumed to be released
+            release_date: result
+                .release_date
+                .clone()
+                .or(result.first_air_date.clone()),
+        }
+    }
+}
+
+impl From<crate::trakt::TraktDiscoveryItem> for DiscoveryItem {
+    fn from(item: crate::trakt::TraktDiscoveryItem) -> Self {
+        DiscoveryItem {
+            id: item.id,
+            title: item.title,
+            year: item.year,
+            media_type: item.media_type,
+            poster_url: None, // Trakt doesn't provide poster URLs directly
+            overview: item.overview,
+            rating: item.rating,
+            is_released: item.is_released,
+            release_date: item.released,
         }
     }
 }
@@ -395,6 +427,9 @@ impl App {
             selected_item_index: 0,
             is_loading_discovery: false,
             discovery_error: None,
+            trakt_auth_url: None,
+            trakt_auth_code_input: String::new(),
+            trakt_auth_error: None,
         }
     }
 

@@ -127,6 +127,11 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Set build environment variables"
+        run: |
+          echo "TRAKT_CLIENT_ID=${{ secrets.TRAKT_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "DISCORD_APP_ID=${{ secrets.DISCORD_APP_ID }}" >> $GITHUB_ENV
+          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" >> $GITHUB_ENV
       - uses: swatinem/rust-cache@v2
         with:
           key: ${{ join(matrix.targets, '-') }}

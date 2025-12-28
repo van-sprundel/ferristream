@@ -1,0 +1,7 @@
+# Environment variables for cargo-dist builds
+# These are injected before `dist build` runs
+- name: Set build environment variables
+  run: |
+    echo "TRAKT_CLIENT_ID=${{ secrets.TRAKT_CLIENT_ID }}" >> $GITHUB_ENV
+    echo "DISCORD_APP_ID=${{ secrets.DISCORD_APP_ID }}" >> $GITHUB_ENV
+    echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" >> $GITHUB_ENV
