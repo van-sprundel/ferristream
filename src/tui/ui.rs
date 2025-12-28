@@ -332,7 +332,9 @@ fn draw_discovery(frame: &mut Frame, app: &App) {
                     item.release_date
                         .as_ref()
                         .map(|d| format!(" 📅{}", d))
-                        .unwrap_or_else(|| item.year.map(|y| format!(" ({})", y)).unwrap_or_default())
+                        .unwrap_or_else(|| {
+                            item.year.map(|y| format!(" ({})", y)).unwrap_or_default()
+                        })
                 } else {
                     item.year.map(|y| format!(" ({})", y)).unwrap_or_default()
                 };
@@ -1282,22 +1284,21 @@ fn draw_trakt_auth(frame: &mut Frame, app: &App) {
         .split(chunks[1]);
 
     // Instructions
-    let instructions = Paragraph::new("To connect your Trakt account, visit the URL below and enter the code:")
-        .style(Style::default().fg(Color::White));
+    let instructions =
+        Paragraph::new("To connect your Trakt account, visit the URL below and enter the code:")
+            .style(Style::default().fg(Color::White));
     frame.render_widget(instructions, content_chunks[0]);
 
     // User code (big and prominent)
     if let Some(code) = &app.trakt_user_code {
         let code_lines = vec![
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    format!("  {}  ", code),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
+            Line::from(vec![Span::styled(
+                format!("  {}  ", code),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
         ];
         let code_widget = Paragraph::new(code_lines)
@@ -1313,19 +1314,25 @@ fn draw_trakt_auth(frame: &mut Frame, app: &App) {
 
     // Verification URL
     if let Some(url) = &app.trakt_verification_url {
-        let url_widget = Paragraph::new(vec![
-            Line::from(vec![
-                Span::raw("Visit: "),
-                Span::styled(url.as_str(), Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)),
-            ]),
-        ]);
+        let url_widget = Paragraph::new(vec![Line::from(vec![
+            Span::raw("Visit: "),
+            Span::styled(
+                url.as_str(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+        ])]);
         frame.render_widget(url_widget, content_chunks[2]);
     }
 
     // Status / Error
     let status_text = if let Some(error) = &app.trakt_auth_error {
         Line::from(vec![
-            Span::styled("Error: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Error: ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(error.as_str(), Style::default().fg(Color::Red)),
         ])
     } else if app.trakt_auth_polling {
@@ -1340,8 +1347,7 @@ fn draw_trakt_auth(frame: &mut Frame, app: &App) {
     frame.render_widget(status_widget, content_chunks[3]);
 
     // Help
-    let help = Paragraph::new("Esc/q: cancel")
-        .style(Style::default().fg(Color::DarkGray));
+    let help = Paragraph::new("Esc/q: cancel").style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[2]);
 }
 

@@ -347,7 +347,10 @@ impl From<TmdbResult> for DiscoveryItem {
             overview: result.overview,
             rating: result.vote_average,
             is_released: true, // TMDB items are assumed to be released
-            release_date: result.release_date.clone().or(result.first_air_date.clone()),
+            release_date: result
+                .release_date
+                .clone()
+                .or(result.first_air_date.clone()),
         }
     }
 }

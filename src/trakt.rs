@@ -144,8 +144,8 @@ pub type RecommendedMovie = TraktMovie;
 /// Unified discovery item for UI consumption
 #[derive(Debug, Clone)]
 pub struct TraktDiscoveryItem {
-    pub id: u64,           // TMDB ID for compatibility
-    pub trakt_id: u64,     // Trakt ID
+    pub id: u64,       // TMDB ID for compatibility
+    pub trakt_id: u64, // Trakt ID
     pub title: String,
     pub year: Option<u16>,
     pub media_type: String, // "movie" or "show"
@@ -171,7 +171,7 @@ impl TraktDiscoveryItem {
     }
 
     fn from_movie(movie: &TraktMovie) -> Option<Self> {
-        let is_released = movie.released.as_ref().map_or(true, |date| {
+        let is_released = movie.released.as_ref().is_none_or(|date| {
             chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
                 .map(|d| d <= chrono::Local::now().date_naive())
                 .unwrap_or(true)
@@ -274,10 +274,7 @@ impl TraktClient {
     }
 
     /// Poll for device token (call every `interval` seconds after showing code to user)
-    pub async fn device_token(
-        &self,
-        device_code: &str,
-    ) -> Result<TokenResponse, TraktError> {
+    pub async fn device_token(&self, device_code: &str) -> Result<TokenResponse, TraktError> {
         let response = self
             .request(reqwest::Method::POST, "/oauth/device/token")
             .json(&serde_json::json!({
@@ -290,7 +287,9 @@ impl TraktClient {
         match response.status().as_u16() {
             200 => Ok(response.json().await?),
             400 => Err(TraktError::AuthPending),
-            404 => Err(TraktError::InvalidResponse("invalid device code".to_string())),
+            404 => Err(TraktError::InvalidResponse(
+                "invalid device code".to_string(),
+            )),
             409 => Err(TraktError::InvalidResponse("code already used".to_string())),
             410 => Err(TraktError::DeviceCodeExpired),
             418 => Err(TraktError::AccessDenied),
@@ -370,10 +369,7 @@ impl TraktClient {
         let today = chrono::Local::now().format("%Y-%m-%d");
         let endpoint = format!("/calendars/my/shows/{}/{}", today, days);
 
-        let response = self
-            .request(reqwest::Method::GET, &endpoint)
-            .send()
-            .await?;
+        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
 
         if response.status() == 401 {
             return Err(TraktError::TokenExpired);
@@ -425,7 +421,10 @@ impl TraktClient {
         debug!("fetching Trakt movie recommendations");
 
         let response = self
-            .request(reqwest::Method::GET, "/recommendations/movies?extended=full")
+            .request(
+                reqwest::Method::GET,
+                "/recommendations/movies?extended=full",
+            )
             .send()
             .await?;
 
@@ -450,10 +449,7 @@ impl TraktClient {
         debug!(limit, "fetching Trakt trending shows");
 
         let endpoint = format!("/shows/trending?extended=full&limit={}", limit);
-        let response = self
-            .request(reqwest::Method::GET, &endpoint)
-            .send()
-            .await?;
+        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
 
         if !response.status().is_success() {
             return Err(TraktError::InvalidResponse(format!(
@@ -466,14 +462,14 @@ impl TraktClient {
     }
 
     /// Get trending movies (public)
-    pub async fn get_trending_movies(&self, limit: usize) -> Result<Vec<TrendingMovie>, TraktError> {
+    pub async fn get_trending_movies(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<TrendingMovie>, TraktError> {
         debug!(limit, "fetching Trakt trending movies");
 
         let endpoint = format!("/movies/trending?extended=full&limit={}", limit);
-        let response = self
-            .request(reqwest::Method::GET, &endpoint)
-            .send()
-            .await?;
+        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
 
         if !response.status().is_success() {
             return Err(TraktError::InvalidResponse(format!(
@@ -533,13 +529,9 @@ impl TraktClient {
         shows: Vec<RecommendedShow>,
         movies: Vec<RecommendedMovie>,
     ) -> Vec<TraktDiscoveryItem> {
-        let show_items = shows
-            .iter()
-            .filter_map(TraktDiscoveryItem::from_show);
+        let show_items = shows.iter().filter_map(TraktDiscoveryItem::from_show);
 
-        let movie_items = movies
-            .iter()
-            .filter_map(TraktDiscoveryItem::from_movie);
+        let movie_items = movies.iter().filter_map(TraktDiscoveryItem::from_movie);
 
         // Interleave shows and movies
         let mut result = Vec::new();

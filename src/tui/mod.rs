@@ -2230,23 +2230,24 @@ async fn run_app(
                             }
                             KeyCode::Char('a') => {
                                 // Start Trakt authentication (only in Trakt section)
-                                if app.settings_section == SettingsSection::Trakt {
-                                    if let Some(client_id) = config.extensions.trakt.client_id.clone() {
-                                        // Save any pending changes first
-                                        if app.settings_dirty {
-                                            if let Err(e) = config.save() {
-                                                error!("Failed to save config before auth: {}", e);
-                                            }
-                                            app.settings_dirty = false;
+                                if app.settings_section == SettingsSection::Trakt
+                                    && let Some(client_id) =
+                                        config.extensions.trakt.client_id.clone()
+                                {
+                                    // Save any pending changes first
+                                    if app.settings_dirty {
+                                        if let Err(e) = config.save() {
+                                            error!("Failed to save config before auth: {}", e);
                                         }
-                                        // Start auth flow
-                                        app.view = View::TraktAuth;
-                                        app.trakt_user_code = None;
-                                        app.trakt_verification_url = None;
-                                        app.trakt_auth_polling = false;
-                                        app.trakt_auth_error = None;
-                                        start_trakt_auth(&tx, client_id);
+                                        app.settings_dirty = false;
                                     }
+                                    // Start auth flow
+                                    app.view = View::TraktAuth;
+                                    app.trakt_user_code = None;
+                                    app.trakt_verification_url = None;
+                                    app.trakt_auth_polling = false;
+                                    app.trakt_auth_error = None;
+                                    start_trakt_auth(&tx, client_id);
                                 }
                             }
                             _ => {}
