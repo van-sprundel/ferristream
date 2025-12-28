@@ -66,10 +66,18 @@ pub struct TraktConfig {
     pub expires_at: Option<i64>,
 }
 
+/// Embedded Trakt client ID (set at compile time via TRAKT_CLIENT_ID env var)
+pub const EMBEDDED_TRAKT_CLIENT_ID: Option<&str> = option_env!("TRAKT_CLIENT_ID");
+
 impl TraktConfig {
+    /// Get the client ID to use (user-provided or embedded)
+    pub fn get_client_id(&self) -> Option<&str> {
+        self.client_id.as_deref().or(EMBEDDED_TRAKT_CLIENT_ID)
+    }
+
     /// Check if we have valid authentication credentials
     pub fn is_authenticated(&self) -> bool {
-        self.client_id.is_some() && self.access_token.is_some()
+        self.get_client_id().is_some() && self.access_token.is_some()
     }
 
     /// Check if the access token has expired (or will expire within 5 minutes)

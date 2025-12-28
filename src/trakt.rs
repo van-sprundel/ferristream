@@ -19,26 +19,12 @@ pub enum TraktError {
     RequestError(#[from] reqwest::Error),
     #[error("not authenticated")]
     NotAuthenticated,
-    #[error("authentication pending")]
-    AuthPending,
-    #[error("device code expired")]
-    DeviceCodeExpired,
     #[error("access denied")]
     AccessDenied,
     #[error("invalid response: {0}")]
     InvalidResponse(String),
     #[error("token expired")]
     TokenExpired,
-}
-
-/// Device code response from Trakt OAuth
-#[derive(Debug, Clone, Deserialize)]
-pub struct DeviceCode {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_url: String,
-    pub expires_in: u32,
-    pub interval: u32,
 }
 
 /// Token response from Trakt OAuth
@@ -228,6 +214,10 @@ impl TraktClient {
             ("Content-Type", "application/json".to_string()),
             ("trakt-api-version", TRAKT_API_VERSION.to_string()),
             ("trakt-api-key", self.client_id.clone()),
+            (
+                "User-Agent",
+                format!("Ferristream/{}", env!("CARGO_PKG_VERSION")),
+            ),
         ];
 
         if let Some(token) = &self.access_token {
@@ -249,56 +239,60 @@ impl TraktClient {
         req
     }
 
-    // ========== OAuth Device Flow ==========
+    // ========== OAuth Authorization Code Flow ==========
 
-    /// Start device authentication flow
-    pub async fn device_code(&self) -> Result<DeviceCode, TraktError> {
-        debug!("requesting device code from Trakt");
+    /// Get the authorization URL for the user to visit
+    pub fn get_authorize_url(&self) -> String {
+        format!(
+            "https://trakt.tv/oauth/authorize?client_id={}&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code",
+            self.client_id
+        )
+    }
+
+    /// Exchange authorization code for access token
+    pub async fn exchange_code(
+        &self,
+        code: &str,
+        client_secret: &str,
+    ) -> Result<TokenResponse, TraktError> {
+        use tracing::{debug, error, info};
+
+        info!(
+            "exchanging authorization code for token (code_len={}, client_id_len={}, secret_len={})",
+            code.len(),
+            self.client_id.len(),
+            client_secret.len()
+        );
+
+        let body = serde_json::json!({
+            "code": code,
+            "client_id": self.client_id,
+            "client_secret": client_secret,
+            "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+            "grant_type": "authorization_code"
+        });
+
+        debug!("request body: {:?}", body);
 
         let response = self
-            .request(reqwest::Method::POST, "/oauth/device/code")
-            .json(&serde_json::json!({
-                "client_id": self.client_id
-            }))
+            .request(reqwest::Method::POST, "/oauth/token")
+            .json(&body)
             .send()
             .await?;
 
-        if !response.status().is_success() {
+        let status = response.status();
+        info!("token exchange response status: {}", status);
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            error!("token exchange failed: {} - {}", status, body);
             return Err(TraktError::InvalidResponse(format!(
-                "device code request failed: {}",
-                response.status()
+                "token exchange failed: {} - {}",
+                status, body
             )));
         }
 
         Ok(response.json().await?)
-    }
-
-    /// Poll for device token (call every `interval` seconds after showing code to user)
-    pub async fn device_token(&self, device_code: &str) -> Result<TokenResponse, TraktError> {
-        let response = self
-            .request(reqwest::Method::POST, "/oauth/device/token")
-            .json(&serde_json::json!({
-                "code": device_code,
-                "client_id": self.client_id
-            }))
-            .send()
-            .await?;
-
-        match response.status().as_u16() {
-            200 => Ok(response.json().await?),
-            400 => Err(TraktError::AuthPending),
-            404 => Err(TraktError::InvalidResponse(
-                "invalid device code".to_string(),
-            )),
-            409 => Err(TraktError::InvalidResponse("code already used".to_string())),
-            410 => Err(TraktError::DeviceCodeExpired),
-            418 => Err(TraktError::AccessDenied),
-            429 => Err(TraktError::AuthPending), // Rate limited, treat as pending
-            _ => Err(TraktError::InvalidResponse(format!(
-                "unexpected status: {}",
-                response.status()
-            ))),
-        }
     }
 
     /// Refresh an expired access token

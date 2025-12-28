@@ -1065,10 +1065,21 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
 
     // Build fields with selection highlighting
     let fields: Vec<(&str, String, bool)> = match app.settings_section {
-        SettingsSection::Prowlarr => vec![
-            ("URL", config.prowlarr.url.clone(), false),
-            ("API Key", mask_secret(&config.prowlarr.apikey), true),
-        ],
+        SettingsSection::Prowlarr => {
+            let status = if config.prowlarr.url.is_empty() {
+                "⚠ URL not set".to_string()
+            } else if config.prowlarr.apikey.is_empty() {
+                "⚠ API Key not set".to_string()
+            } else {
+                "✓ Configured (use 'd' for Doctor to test connection)".to_string()
+            };
+
+            vec![
+                ("URL", config.prowlarr.url.clone(), false),
+                ("API Key", mask_secret(&config.prowlarr.apikey), true),
+                ("Status", status, false),
+            ]
+        }
         SettingsSection::Tmdb => vec![(
             "API Key",
             config
@@ -1139,16 +1150,17 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
             ),
         ],
         SettingsSection::Trakt => {
+            let has_client_id = config.extensions.trakt.get_client_id().is_some();
             let auth_status = if config.extensions.trakt.is_authenticated() {
                 if config.extensions.trakt.is_token_expired() {
-                    "Token expired - press 'a' to re-authenticate".to_string()
+                    "⚠ Token expired - Enter to re-authenticate".to_string()
                 } else {
-                    "Authenticated".to_string()
+                    "✓ Authenticated".to_string()
                 }
-            } else if config.extensions.trakt.client_id.is_some() {
-                "Press 'a' to authenticate".to_string()
+            } else if has_client_id {
+                "Not connected - Enter to authenticate".to_string()
             } else {
-                "Set Client ID first".to_string()
+                "No API credentials available".to_string()
             };
 
             vec![
@@ -1169,7 +1181,13 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                         .client_id
                         .as_ref()
                         .map(|k| mask_secret(k))
-                        .unwrap_or_else(|| "(not set)".to_string()),
+                        .unwrap_or_else(|| {
+                            if crate::config::EMBEDDED_TRAKT_CLIENT_ID.is_some() {
+                                "(using embedded)".to_string()
+                            } else {
+                                "(not set)".to_string()
+                            }
+                        }),
                     true,
                 ),
                 (
@@ -1180,7 +1198,7 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                         .client_secret
                         .as_ref()
                         .map(|k| mask_secret(k))
-                        .unwrap_or_else(|| "(not set)".to_string()),
+                        .unwrap_or_else(|| "(not needed)".to_string()),
                     true,
                 ),
                 ("Status", auth_status, false),
@@ -1276,55 +1294,52 @@ fn draw_trakt_auth(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3), // Instructions
-            Constraint::Length(5), // Code display
-            Constraint::Length(3), // URL
+            Constraint::Length(4), // Instructions + URL
+            Constraint::Length(3), // Code input
             Constraint::Min(0),    // Status / Error
         ])
         .split(chunks[1]);
 
-    // Instructions
-    let instructions =
-        Paragraph::new("To connect your Trakt account, visit the URL below and enter the code:")
-            .style(Style::default().fg(Color::White));
-    frame.render_widget(instructions, content_chunks[0]);
-
-    // User code (big and prominent)
-    if let Some(code) = &app.trakt_user_code {
-        let code_lines = vec![
+    // Instructions and URL
+    if let Some(url) = &app.trakt_auth_url {
+        let instructions = Paragraph::new(vec![
+            Line::from("A browser window should have opened. If not, visit:"),
             Line::from(""),
             Line::from(vec![Span::styled(
-                format!("  {}  ", code),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-        ];
-        let code_widget = Paragraph::new(code_lines)
-            .block(Block::default().borders(Borders::ALL).title("Code"))
-            .style(Style::default());
-        frame.render_widget(code_widget, content_chunks[1]);
-    } else {
-        let loading = Paragraph::new("Requesting device code...")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(loading, content_chunks[1]);
-    }
-
-    // Verification URL
-    if let Some(url) = &app.trakt_verification_url {
-        let url_widget = Paragraph::new(vec![Line::from(vec![
-            Span::raw("Visit: "),
-            Span::styled(
                 url.as_str(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::UNDERLINED),
-            ),
-        ])]);
-        frame.render_widget(url_widget, content_chunks[2]);
+            )]),
+        ])
+        .style(Style::default().fg(Color::White));
+        frame.render_widget(instructions, content_chunks[0]);
+    } else {
+        let instructions = Paragraph::new("Generating authorization URL...")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(instructions, content_chunks[0]);
     }
+
+    // Code input field
+    let code_display = if app.trakt_auth_code_input.is_empty() {
+        "Paste the authorization code here..."
+    } else {
+        &app.trakt_auth_code_input
+    };
+    let code_style = if app.trakt_auth_code_input.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    };
+    let code_widget = Paragraph::new(code_display).style(code_style).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Authorization Code")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(code_widget, content_chunks[1]);
 
     // Status / Error
     let status_text = if let Some(error) = &app.trakt_auth_error {
@@ -1335,19 +1350,24 @@ fn draw_trakt_auth(frame: &mut Frame, app: &App) {
             ),
             Span::styled(error.as_str(), Style::default().fg(Color::Red)),
         ])
-    } else if app.trakt_auth_polling {
+    } else if !app.trakt_auth_code_input.is_empty() {
         Line::from(vec![
-            Span::styled("⏳ ", Style::default().fg(Color::Yellow)),
-            Span::raw("Waiting for authorization..."),
+            Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter", Style::default().fg(Color::Green)),
+            Span::styled(" to authenticate", Style::default().fg(Color::DarkGray)),
         ])
     } else {
-        Line::from("")
+        Line::from(vec![Span::styled(
+            "After authorizing, copy the code from Trakt and paste it here",
+            Style::default().fg(Color::DarkGray),
+        )])
     };
     let status_widget = Paragraph::new(status_text);
-    frame.render_widget(status_widget, content_chunks[3]);
+    frame.render_widget(status_widget, content_chunks[2]);
 
     // Help
-    let help = Paragraph::new("Esc/q: cancel").style(Style::default().fg(Color::DarkGray));
+    let help =
+        Paragraph::new("Enter: submit | Esc: cancel").style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[2]);
 }
 

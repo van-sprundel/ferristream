@@ -122,7 +122,7 @@ impl SettingsSection {
     /// Number of editable fields in this section
     pub fn field_count(&self) -> usize {
         match self {
-            SettingsSection::Prowlarr => 2,  // url, apikey
+            SettingsSection::Prowlarr => 3,  // url, apikey, status
             SettingsSection::Tmdb => 1,      // apikey
             SettingsSection::Player => 2,    // command, args
             SettingsSection::Streaming => 1, // auto_race
@@ -302,10 +302,9 @@ pub struct App {
     pub is_loading_discovery: bool,
     pub discovery_error: Option<String>,
 
-    // Trakt authentication
-    pub trakt_user_code: Option<String>,
-    pub trakt_verification_url: Option<String>,
-    pub trakt_auth_polling: bool,
+    // Trakt authentication (Authorization Code flow)
+    pub trakt_auth_url: Option<String>,
+    pub trakt_auth_code_input: String,
     pub trakt_auth_error: Option<String>,
 }
 
@@ -428,9 +427,8 @@ impl App {
             selected_item_index: 0,
             is_loading_discovery: false,
             discovery_error: None,
-            trakt_user_code: None,
-            trakt_verification_url: None,
-            trakt_auth_polling: false,
+            trakt_auth_url: None,
+            trakt_auth_code_input: String::new(),
             trakt_auth_error: None,
         }
     }

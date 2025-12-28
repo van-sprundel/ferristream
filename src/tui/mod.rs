@@ -69,12 +69,9 @@ pub enum UiMessage {
     },
     /// Discovery loading failed
     DiscoveryError(String),
-    /// Trakt device code received
-    TraktDeviceCode {
-        user_code: String,
-        verification_url: String,
-        device_code: String,
-        interval: u32,
+    /// Trakt auth URL ready (Authorization Code flow)
+    TraktAuthReady {
+        auth_url: String,
     },
     /// Trakt auth completed successfully
     TraktAuthComplete {
@@ -84,8 +81,6 @@ pub enum UiMessage {
     },
     /// Trakt auth error
     TraktAuthError(String),
-    /// Trakt auth still pending (user hasn't approved yet)
-    TraktAuthPending,
 }
 
 fn restore_terminal() {
@@ -106,11 +101,11 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
     tokio::spawn(async move {
         let mut rows = Vec::new();
 
-        // Check if we have Trakt credentials
-        let Some(client_id) = trakt_config.client_id.clone() else {
+        // Check if we have Trakt credentials (user-provided or embedded)
+        let Some(client_id) = trakt_config.get_client_id().map(String::from) else {
             let _ = tx
                 .send(UiMessage::DiscoveryError(
-                    "Trakt not configured. Go to Settings → Trakt to set up.".to_string(),
+                    "Trakt not configured. Go to Settings → Trakt to authenticate.".to_string(),
                 ))
                 .await;
             return;
@@ -229,91 +224,46 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
 }
 
 /// Start Trakt device authentication flow
-fn start_trakt_auth(tx: &mpsc::Sender<UiMessage>, client_id: String) {
+/// Generate Trakt auth URL and optionally open in browser
+fn start_trakt_auth(client_id: &str) -> String {
+    let client = TraktClient::new(client_id.to_string());
+    let auth_url = client.get_authorize_url();
+
+    // Try to open in browser
+    let _ = open::that(&auth_url);
+
+    auth_url
+}
+
+/// Exchange authorization code for tokens
+fn exchange_trakt_code(
+    tx: &mpsc::Sender<UiMessage>,
+    client_id: String,
+    client_secret: String,
+    code: String,
+) {
     let tx = tx.clone();
 
     tokio::spawn(async move {
         let client = TraktClient::new(client_id);
 
-        match client.device_code().await {
-            Ok(code) => {
+        match client.exchange_code(&code, &client_secret).await {
+            Ok(token) => {
                 let _ = tx
-                    .send(UiMessage::TraktDeviceCode {
-                        user_code: code.user_code,
-                        verification_url: code.verification_url,
-                        device_code: code.device_code,
-                        interval: code.interval,
+                    .send(UiMessage::TraktAuthComplete {
+                        access_token: token.access_token,
+                        refresh_token: token.refresh_token,
+                        expires_in: token.expires_in,
                     })
                     .await;
             }
             Err(e) => {
                 let _ = tx
                     .send(UiMessage::TraktAuthError(format!(
-                        "Failed to get device code: {}",
+                        "Failed to exchange code: {}",
                         e
                     )))
                     .await;
-            }
-        }
-    });
-}
-
-/// Poll for Trakt device token
-fn poll_trakt_auth(
-    tx: &mpsc::Sender<UiMessage>,
-    client_id: String,
-    device_code: String,
-    interval: u32,
-) {
-    let tx = tx.clone();
-
-    tokio::spawn(async move {
-        let client = TraktClient::new(client_id);
-        let poll_interval = Duration::from_secs(interval as u64);
-
-        loop {
-            tokio::time::sleep(poll_interval).await;
-
-            match client.device_token(&device_code).await {
-                Ok(token) => {
-                    let _ = tx
-                        .send(UiMessage::TraktAuthComplete {
-                            access_token: token.access_token,
-                            refresh_token: token.refresh_token,
-                            expires_in: token.expires_in,
-                        })
-                        .await;
-                    break;
-                }
-                Err(crate::trakt::TraktError::AuthPending) => {
-                    // Keep polling
-                    let _ = tx.send(UiMessage::TraktAuthPending).await;
-                }
-                Err(crate::trakt::TraktError::DeviceCodeExpired) => {
-                    let _ = tx
-                        .send(UiMessage::TraktAuthError(
-                            "Device code expired. Please try again.".to_string(),
-                        ))
-                        .await;
-                    break;
-                }
-                Err(crate::trakt::TraktError::AccessDenied) => {
-                    let _ = tx
-                        .send(UiMessage::TraktAuthError(
-                            "Access denied. Please try again.".to_string(),
-                        ))
-                        .await;
-                    break;
-                }
-                Err(e) => {
-                    let _ = tx
-                        .send(UiMessage::TraktAuthError(format!(
-                            "Authentication failed: {}",
-                            e
-                        )))
-                        .await;
-                    break;
-                }
             }
         }
     });
@@ -718,20 +668,10 @@ async fn run_app(
                     app.is_loading_discovery = false;
                     app.discovery_error = Some(e);
                 }
-                UiMessage::TraktDeviceCode {
-                    user_code,
-                    verification_url,
-                    device_code,
-                    interval,
-                } => {
-                    app.trakt_user_code = Some(user_code);
-                    app.trakt_verification_url = Some(verification_url);
-                    app.trakt_auth_polling = true;
+                UiMessage::TraktAuthReady { auth_url } => {
+                    app.trakt_auth_url = Some(auth_url);
+                    app.trakt_auth_code_input = String::new();
                     app.trakt_auth_error = None;
-                    // Start polling for auth completion
-                    if let Some(client_id) = config.extensions.trakt.client_id.clone() {
-                        poll_trakt_auth(&tx, client_id, device_code, interval);
-                    }
                 }
                 UiMessage::TraktAuthComplete {
                     access_token,
@@ -755,9 +695,8 @@ async fn run_app(
                         info!("Trakt authentication saved");
                     }
                     // Clear auth state and go back to discovery
-                    app.trakt_auth_polling = false;
-                    app.trakt_user_code = None;
-                    app.trakt_verification_url = None;
+                    app.trakt_auth_url = None;
+                    app.trakt_auth_code_input = String::new();
                     app.trakt_auth_error = None;
                     app.view = View::Discovery;
                     // Reload discovery with Trakt data
@@ -765,12 +704,7 @@ async fn run_app(
                     load_discovery_data(&tx, config);
                 }
                 UiMessage::TraktAuthError(e) => {
-                    app.trakt_auth_polling = false;
                     app.trakt_auth_error = Some(e);
-                }
-                UiMessage::TraktAuthPending => {
-                    // Still waiting for user to approve - just keep polling indicator
-                    app.trakt_auth_polling = true;
                 }
                 UiMessage::RacingStatus { count, message } => {
                     app.racing_message = Some(format!("Racing {} torrents: {}", count, message));
@@ -2208,13 +2142,39 @@ async fn run_app(
                                 app.settings_next_field();
                             }
                             KeyCode::Enter => {
-                                // Start editing current field
-                                let current_value = get_settings_field_value(app, config);
-                                app.settings_edit_buffer = current_value;
-                                app.settings_editing = true;
+                                // Try to toggle if it's a boolean field, otherwise edit
+                                if toggle_settings_bool(app, config) {
+                                    app.settings_dirty = true;
+                                } else if app.settings_section == SettingsSection::Trakt
+                                    && app.settings_field_index == 3
+                                {
+                                    // Status field - start OAuth flow if client_id is available
+                                    if let Some(client_id) =
+                                        config.extensions.trakt.get_client_id().map(String::from)
+                                    {
+                                        // Save any pending changes first
+                                        if app.settings_dirty {
+                                            if let Err(e) = config.save() {
+                                                error!("Failed to save config before auth: {}", e);
+                                            }
+                                            app.settings_dirty = false;
+                                        }
+                                        // Start auth flow - generate URL and open browser
+                                        let auth_url = start_trakt_auth(&client_id);
+                                        app.view = View::TraktAuth;
+                                        app.trakt_auth_url = Some(auth_url);
+                                        app.trakt_auth_code_input = String::new();
+                                        app.trakt_auth_error = None;
+                                    }
+                                } else if !is_readonly_field(app) {
+                                    // Start editing non-boolean field
+                                    let current_value = get_settings_field_value(app, config);
+                                    app.settings_edit_buffer = current_value;
+                                    app.settings_editing = true;
+                                }
                             }
                             KeyCode::Char(' ') => {
-                                // Toggle boolean fields
+                                // Toggle boolean fields (alternative to Enter)
                                 if toggle_settings_bool(app, config) {
                                     app.settings_dirty = true;
                                 }
@@ -2228,41 +2188,42 @@ async fn run_app(
                                     app.settings_dirty = false;
                                 }
                             }
-                            KeyCode::Char('a') => {
-                                // Start Trakt authentication (only in Trakt section)
-                                if app.settings_section == SettingsSection::Trakt
-                                    && let Some(client_id) =
-                                        config.extensions.trakt.client_id.clone()
-                                {
-                                    // Save any pending changes first
-                                    if app.settings_dirty {
-                                        if let Err(e) = config.save() {
-                                            error!("Failed to save config before auth: {}", e);
-                                        }
-                                        app.settings_dirty = false;
-                                    }
-                                    // Start auth flow
-                                    app.view = View::TraktAuth;
-                                    app.trakt_user_code = None;
-                                    app.trakt_verification_url = None;
-                                    app.trakt_auth_polling = false;
-                                    app.trakt_auth_error = None;
-                                    start_trakt_auth(&tx, client_id);
-                                }
-                            }
                             _ => {}
                         }
                     }
                 }
                 View::TraktAuth => {
                     match key.code {
-                        KeyCode::Esc | KeyCode::Char('q') => {
+                        KeyCode::Esc => {
                             // Cancel auth and go back to settings
-                            app.trakt_auth_polling = false;
-                            app.trakt_user_code = None;
-                            app.trakt_verification_url = None;
+                            app.trakt_auth_url = None;
+                            app.trakt_auth_code_input = String::new();
                             app.trakt_auth_error = None;
                             app.view = View::Settings;
+                        }
+                        KeyCode::Enter => {
+                            // Submit the code
+                            if !app.trakt_auth_code_input.is_empty()
+                                && let Some(client_id) =
+                                    config.extensions.trakt.get_client_id().map(String::from)
+                                {
+                                    let client_secret = config
+                                        .extensions
+                                        .trakt
+                                        .client_secret
+                                        .clone()
+                                        .unwrap_or_default();
+                                    let code = app.trakt_auth_code_input.trim().to_string();
+                                    exchange_trakt_code(&tx, client_id, client_secret, code);
+                                }
+                        }
+                        KeyCode::Char(c) => {
+                            // Type characters into code input
+                            app.trakt_auth_code_input.push(c);
+                            app.trakt_auth_error = None; // Clear error on new input
+                        }
+                        KeyCode::Backspace => {
+                            app.trakt_auth_code_input.pop();
                         }
                         _ => {}
                     }
@@ -2288,6 +2249,7 @@ fn get_settings_field_value(app: &App, config: &Config) -> String {
         SettingsSection::Prowlarr => match app.settings_field_index {
             0 => config.prowlarr.url.clone(),
             1 => config.prowlarr.apikey.clone(),
+            2 => String::new(), // Status field is read-only
             _ => String::new(),
         },
         SettingsSection::Tmdb => match app.settings_field_index {
@@ -2427,6 +2389,17 @@ fn toggle_settings_bool(app: &App, config: &mut Config) -> bool {
             config.extensions.trakt.enabled = !config.extensions.trakt.enabled;
             true
         }
+        _ => false,
+    }
+}
+
+/// Check if the current settings field is read-only (can't be edited)
+fn is_readonly_field(app: &App) -> bool {
+    match app.settings_section {
+        // Prowlarr "Status" field (index 2) is read-only
+        SettingsSection::Prowlarr => app.settings_field_index == 2,
+        // Trakt "Status" field (index 3) is read-only
+        SettingsSection::Trakt => app.settings_field_index == 3,
         _ => false,
     }
 }
