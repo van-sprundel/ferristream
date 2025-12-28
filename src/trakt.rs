@@ -145,7 +145,7 @@ impl TraktDiscoveryItem {
     fn from_show(show: &TraktShow) -> Option<Self> {
         Some(Self {
             id: show.ids.tmdb?,
-            trakt_id: show.ids.trakt.unwrap_or(0),
+            trakt_id: show.ids.trakt?,
             title: show.title.clone(),
             year: show.year,
             media_type: "tv".to_string(),
