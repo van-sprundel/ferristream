@@ -166,8 +166,14 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
             }
 
             // Row 3: Recommendations
-            let rec_shows = rec_shows_res.unwrap_or_default();
-            let rec_movies = rec_movies_res.unwrap_or_default();
+            let rec_shows = rec_shows_res.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load Trakt show recommendations");
+                Vec::new()
+            });
+            let rec_movies = rec_movies_res.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load Trakt movie recommendations");
+                Vec::new()
+            });
             let rec_items: Vec<DiscoveryItem> =
                 TraktClient::recommendations_to_discovery(rec_shows, rec_movies)
                     .into_iter()
@@ -683,10 +689,7 @@ async fn run_app(
                     config.extensions.trakt.refresh_token = Some(refresh_token);
                     config.extensions.trakt.enabled = true;
                     // Calculate expiry timestamp
-                    let expires_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64 + expires_in as i64)
-                        .ok();
+                    let expires_at = Some(::chrono::Utc::now().timestamp() + expires_in as i64);
                     config.extensions.trakt.expires_at = expires_at;
                     // Save config
                     if let Err(e) = config.save() {

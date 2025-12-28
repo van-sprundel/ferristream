@@ -84,10 +84,7 @@ impl TraktConfig {
     pub fn is_token_expired(&self) -> bool {
         match self.expires_at {
             Some(expires_at) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+                let now = ::chrono::Utc::now().timestamp();
                 // Consider expired if within 5 minutes of expiry
                 expires_at - now < 300
             }
