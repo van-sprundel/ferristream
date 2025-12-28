@@ -1198,7 +1198,7 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                         .client_secret
                         .as_ref()
                         .map(|k| mask_secret(k))
-                        .unwrap_or_else(|| "(not needed)".to_string()),
+                        .unwrap_or_else(|| "(not set)".to_string()),
                     true,
                 ),
                 ("Status", auth_status, false),

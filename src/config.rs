@@ -82,11 +82,12 @@ impl TraktConfig {
 
     /// Check if the access token has expired (or will expire within 5 minutes)
     pub fn is_token_expired(&self) -> bool {
+        const FIVE_MINUTES_IN_SECONDS: i64 = 300;
         match self.expires_at {
             Some(expires_at) => {
                 let now = ::chrono::Utc::now().timestamp();
                 // Consider expired if within 5 minutes of expiry
-                expires_at - now < 300
+                expires_at - now < FIVE_MINUTES_IN_SECONDS
             }
             None => false, // No expiry info, assume valid
         }

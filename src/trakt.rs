@@ -157,7 +157,7 @@ impl TraktDiscoveryItem {
     }
 
     fn from_movie(movie: &TraktMovie) -> Option<Self> {
-        let is_released = movie.released.as_ref().is_none_or(|date| {
+        let is_released = movie.released.as_ref().map_or(true, |date| {
             chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
                 .map(|d| d <= chrono::Local::now().date_naive())
                 .unwrap_or(true)
