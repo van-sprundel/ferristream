@@ -157,7 +157,7 @@ impl TraktDiscoveryItem {
     }
 
     fn from_movie(movie: &TraktMovie) -> Option<Self> {
-        let is_released = movie.released.as_ref().map_or(true, |date| {
+        let is_released = movie.released.as_ref().is_none_or(|date| {
             chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
                 .map(|d| d <= chrono::Local::now().date_naive())
                 .unwrap_or(true)
@@ -523,25 +523,10 @@ impl TraktClient {
         shows: Vec<RecommendedShow>,
         movies: Vec<RecommendedMovie>,
     ) -> Vec<TraktDiscoveryItem> {
+        use itertools::Itertools;
         let show_items = shows.iter().filter_map(TraktDiscoveryItem::from_show);
-
         let movie_items = movies.iter().filter_map(TraktDiscoveryItem::from_movie);
-
-        // Interleave shows and movies
-        let mut result = Vec::new();
-        let mut show_iter = show_items.peekable();
-        let mut movie_iter = movie_items.peekable();
-
-        while show_iter.peek().is_some() || movie_iter.peek().is_some() {
-            if let Some(show) = show_iter.next() {
-                result.push(show);
-            }
-            if let Some(movie) = movie_iter.next() {
-                result.push(movie);
-            }
-        }
-
-        result
+        show_items.interleave(movie_items).collect()
     }
 
     /// Convert trending to discovery items
@@ -549,29 +534,14 @@ impl TraktClient {
         shows: Vec<TrendingShow>,
         movies: Vec<TrendingMovie>,
     ) -> Vec<TraktDiscoveryItem> {
+        use itertools::Itertools;
         let show_items = shows
             .iter()
             .filter_map(|t| TraktDiscoveryItem::from_show(&t.show));
-
         let movie_items = movies
             .iter()
             .filter_map(|t| TraktDiscoveryItem::from_movie(&t.movie));
-
-        // Interleave shows and movies
-        let mut result = Vec::new();
-        let mut show_iter = show_items.peekable();
-        let mut movie_iter = movie_items.peekable();
-
-        while show_iter.peek().is_some() || movie_iter.peek().is_some() {
-            if let Some(show) = show_iter.next() {
-                result.push(show);
-            }
-            if let Some(movie) = movie_iter.next() {
-                result.push(movie);
-            }
-        }
-
-        result
+        show_items.interleave(movie_items).collect()
     }
 }
 
@@ -637,9 +607,14 @@ mod tests {
 
     #[test]
     fn test_discovery_item_unreleased_movie() {
+        use chrono::Datelike;
+        let future_date = (chrono::Local::now().date_naive() + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let future_year = (chrono::Local::now().date_naive().year() + 1) as u16;
         let movie = TraktMovie {
             title: "Future Movie".to_string(),
-            year: Some(2030),
+            year: Some(future_year),
             ids: TraktIds {
                 trakt: Some(99999),
                 tmdb: Some(99999),
@@ -647,7 +622,7 @@ mod tests {
             },
             overview: None,
             rating: None,
-            released: Some("2030-01-01".to_string()),
+            released: Some(future_date),
         };
 
         let item = TraktDiscoveryItem::from_movie(&movie).unwrap();
