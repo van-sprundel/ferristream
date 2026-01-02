@@ -13,12 +13,12 @@ installers = ["shell", "powershell"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Which actions to run on pull requests
 pr-run-mode = "upload"
-# Custom build setup for environment variables
-github-build-setup = "build-setup.yml"
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+# Publish to crates.io after release
+publish-jobs = ["./publish-crates"]
 
 # Install NASM on Windows for aws-lc-sys (used by rustls)
 [dist.github-custom-runners]
