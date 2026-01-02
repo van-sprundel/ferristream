@@ -70,7 +70,10 @@ pub async fn run_checks(config: &Config) -> Vec<CheckResult> {
         results.push(check_discord(config));
     }
 
-    if config.extensions.trakt.enabled {
+    // Check if Trakt is enabled (for discovery or scrobbling)
+    let trakt_enabled = config.providers.discovery.as_deref() == Some("trakt")
+        || config.scrobblers.enabled.contains(&"trakt".to_string());
+    if trakt_enabled {
         results.push(check_trakt(config).await);
     }
 
@@ -131,9 +134,9 @@ fn check_discord(config: &Config) -> CheckResult {
 }
 
 async fn check_trakt(config: &Config) -> CheckResult {
-    let trakt = &config.extensions.trakt;
+    let trakt = &config.providers.trakt;
 
-    if trakt.client_id.is_none() {
+    if trakt.get_client_id().is_none() {
         return CheckResult::error("Trakt", "Enabled but no client_id configured");
     }
 
@@ -227,8 +230,8 @@ pub fn print_results(results: &[CheckResult]) {
 mod tests {
     use super::*;
     use crate::config::{
-        DiscordConfig, ExtensionsConfig, PlayerConfig, ProwlarrConfig, StorageConfig,
-        StreamingConfig, SubtitlesConfig, TmdbConfig, TraktConfig,
+        DiscordConfig, ExtensionsConfig, PlayerConfig, ProvidersConfig, ProwlarrConfig,
+        ScrobblersConfig, StorageConfig, StreamingConfig, SubtitlesConfig, TmdbConfig, TraktConfig,
     };
 
     #[test]
@@ -296,8 +299,9 @@ mod tests {
                     enabled: true,
                     app_id: Some("123456".to_string()),
                 },
-                trakt: TraktConfig::default(),
             },
+            providers: ProvidersConfig::default(),
+            scrobblers: ScrobblersConfig::default(),
         };
 
         let result = check_discord(&config);
@@ -322,8 +326,9 @@ mod tests {
                     enabled: true,
                     app_id: None,
                 },
-                trakt: TraktConfig::default(),
             },
+            providers: ProvidersConfig::default(),
+            scrobblers: ScrobblersConfig::default(),
         };
 
         let result = check_discord(&config);
@@ -343,15 +348,16 @@ mod tests {
             storage: StorageConfig::default(),
             subtitles: SubtitlesConfig::default(),
             streaming: StreamingConfig::default(),
-            extensions: ExtensionsConfig {
-                discord: DiscordConfig::default(),
+            extensions: ExtensionsConfig::default(),
+            providers: ProvidersConfig {
+                discovery: Some("trakt".to_string()),
                 trakt: TraktConfig {
-                    enabled: true,
                     client_id: None,
                     access_token: None,
                     ..Default::default()
                 },
             },
+            scrobblers: ScrobblersConfig::default(),
         };
 
         let result = check_trakt(&config).await;
@@ -371,15 +377,16 @@ mod tests {
             storage: StorageConfig::default(),
             subtitles: SubtitlesConfig::default(),
             streaming: StreamingConfig::default(),
-            extensions: ExtensionsConfig {
-                discord: DiscordConfig::default(),
+            extensions: ExtensionsConfig::default(),
+            providers: ProvidersConfig {
+                discovery: Some("trakt".to_string()),
                 trakt: TraktConfig {
-                    enabled: true,
                     client_id: Some("client123".to_string()),
                     access_token: None,
                     ..Default::default()
                 },
             },
+            scrobblers: ScrobblersConfig::default(),
         };
 
         let result = check_trakt(&config).await;
@@ -399,15 +406,16 @@ mod tests {
             storage: StorageConfig::default(),
             subtitles: SubtitlesConfig::default(),
             streaming: StreamingConfig::default(),
-            extensions: ExtensionsConfig {
-                discord: DiscordConfig::default(),
+            extensions: ExtensionsConfig::default(),
+            providers: ProvidersConfig {
+                discovery: Some("trakt".to_string()),
                 trakt: TraktConfig {
-                    enabled: true,
                     client_id: Some("client123".to_string()),
                     access_token: Some("token456".to_string()),
                     ..Default::default()
                 },
             },
+            scrobblers: ScrobblersConfig::default(),
         };
 
         let result = check_trakt(&config).await;
@@ -431,6 +439,8 @@ mod tests {
             subtitles: SubtitlesConfig::default(),
             streaming: StreamingConfig::default(),
             extensions: ExtensionsConfig::default(),
+            providers: ProvidersConfig::default(),
+            scrobblers: ScrobblersConfig::default(),
         };
 
         let result = check_player(&config);
@@ -461,6 +471,8 @@ mod tests {
             subtitles: SubtitlesConfig::default(),
             streaming: StreamingConfig::default(),
             extensions: ExtensionsConfig::default(),
+            providers: ProvidersConfig::default(),
+            scrobblers: ScrobblersConfig::default(),
         };
 
         let result = check_storage(&config);
@@ -494,6 +506,8 @@ mod tests {
             subtitles: SubtitlesConfig::default(),
             streaming: StreamingConfig::default(),
             extensions: ExtensionsConfig::default(),
+            providers: ProvidersConfig::default(),
+            scrobblers: ScrobblersConfig::default(),
         };
 
         let result = check_storage(&config);

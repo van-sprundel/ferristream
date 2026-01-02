@@ -354,14 +354,14 @@ impl From<TmdbResult> for DiscoveryItem {
     }
 }
 
-impl From<crate::trakt::TraktDiscoveryItem> for DiscoveryItem {
-    fn from(item: crate::trakt::TraktDiscoveryItem) -> Self {
+impl From<crate::providers::DiscoveryItem> for DiscoveryItem {
+    fn from(item: crate::providers::DiscoveryItem) -> Self {
         DiscoveryItem {
             id: item.id,
             title: item.title,
             year: item.year,
             media_type: item.media_type,
-            poster_url: None, // Trakt doesn't provide poster URLs directly
+            poster_url: None, // Providers don't provide poster URLs directly
             overview: item.overview,
             rating: item.rating,
             is_released: item.is_released,

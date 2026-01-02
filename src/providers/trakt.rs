@@ -1,42 +1,20 @@
-//! Trakt.tv API client for discovery and authentication
+//! Trakt.tv content provider
 //!
-//! Provides methods for:
-//! - Device OAuth authentication flow
-//! - Fetching watchlist, calendar, and recommendations
-//! - Public trending content (no auth required)
+//! Implements the ContentProvider trait for Trakt.tv, providing:
+//! - Public discovery (trending shows/movies)
+//! - Authenticated features (watchlist, calendar, recommendations)
+//! - OAuth authentication flow
 
+use super::{ContentProvider, DiscoveryItem, ProviderError, TokenResponse};
+use async_trait::async_trait;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use serde::Deserialize;
 use tracing::debug;
 
 const TRAKT_API_URL: &str = "https://api.trakt.tv";
 const TRAKT_API_VERSION: &str = "2";
 
-#[derive(Error, Debug)]
-pub enum TraktError {
-    #[error("request failed: {0}")]
-    RequestError(#[from] reqwest::Error),
-    #[error("not authenticated")]
-    NotAuthenticated,
-    #[error("access denied")]
-    AccessDenied,
-    #[error("invalid response: {0}")]
-    InvalidResponse(String),
-    #[error("token expired")]
-    TokenExpired,
-}
-
-/// Token response from Trakt OAuth
-#[derive(Debug, Clone, Deserialize)]
-pub struct TokenResponse {
-    pub access_token: String,
-    pub token_type: String,
-    pub expires_in: u64,
-    pub refresh_token: String,
-    pub scope: String,
-    pub created_at: u64,
-}
+// ========== API Response Types ==========
 
 /// IDs object returned by Trakt API
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -123,69 +101,64 @@ pub struct TrendingMovie {
     pub movie: TraktMovie,
 }
 
-/// Recommendation item (direct show/movie, no wrapper)
-pub type RecommendedShow = TraktShow;
-pub type RecommendedMovie = TraktMovie;
-
-/// Unified discovery item for UI consumption
-#[derive(Debug, Clone)]
-pub struct TraktDiscoveryItem {
-    pub id: u64,       // TMDB ID for compatibility
-    pub trakt_id: u64, // Trakt ID
-    pub title: String,
-    pub year: Option<u16>,
-    pub media_type: String, // "movie" or "show"
-    pub overview: Option<String>,
-    pub rating: Option<f64>,
-    pub released: Option<String>, // Release/air date
-    pub is_released: bool,        // Whether it's already released
+/// Token response from Trakt OAuth
+#[derive(Debug, Clone, Deserialize)]
+struct TraktTokenResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+    refresh_token: String,
+    scope: String,
+    created_at: u64,
 }
 
-impl TraktDiscoveryItem {
-    fn from_show(show: &TraktShow) -> Option<Self> {
-        Some(Self {
-            id: show.ids.tmdb?,
-            trakt_id: show.ids.trakt?,
-            title: show.title.clone(),
-            year: show.year,
-            media_type: "tv".to_string(),
-            overview: show.overview.clone(),
-            rating: show.rating,
-            released: None,
-            is_released: true, // Assume released unless we know otherwise
-        })
-    }
+// ========== Conversion helpers ==========
 
-    fn from_movie(movie: &TraktMovie) -> Option<Self> {
-        let is_released = movie.released.as_ref().is_none_or(|date| {
-            chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .map(|d| d <= chrono::Local::now().date_naive())
-                .unwrap_or(true)
-        });
-
-        Some(Self {
-            id: movie.ids.tmdb?,
-            trakt_id: movie.ids.trakt?,
-            title: movie.title.clone(),
-            year: movie.year,
-            media_type: "movie".to_string(),
-            overview: movie.overview.clone(),
-            rating: movie.rating,
-            released: movie.released.clone(),
-            is_released,
-        })
-    }
+fn show_to_discovery(show: &TraktShow) -> Option<DiscoveryItem> {
+    Some(DiscoveryItem {
+        id: show.ids.tmdb?,
+        provider_id: show.ids.trakt?,
+        title: show.title.clone(),
+        year: show.year,
+        media_type: "tv".to_string(),
+        overview: show.overview.clone(),
+        rating: show.rating,
+        released: None,
+        is_released: true,
+    })
 }
 
-/// Trakt API client
-pub struct TraktClient {
+fn movie_to_discovery(movie: &TraktMovie) -> Option<DiscoveryItem> {
+    let is_released = movie.released.as_ref().is_none_or(|date| {
+        chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map(|d| d <= chrono::Local::now().date_naive())
+            .unwrap_or(true)
+    });
+
+    Some(DiscoveryItem {
+        id: movie.ids.tmdb?,
+        provider_id: movie.ids.trakt?,
+        title: movie.title.clone(),
+        year: movie.year,
+        media_type: "movie".to_string(),
+        overview: movie.overview.clone(),
+        rating: movie.rating,
+        released: movie.released.clone(),
+        is_released,
+    })
+}
+
+// ========== TraktProvider ==========
+
+/// Trakt.tv content provider
+pub struct TraktProvider {
     client: Client,
     client_id: String,
     access_token: Option<String>,
 }
 
-impl TraktClient {
-    /// Create a new Trakt client with just client_id (for public endpoints and auth flow)
+impl TraktProvider {
+    /// Create a new Trakt provider with just client_id (for public endpoints and auth flow)
     pub fn new(client_id: String) -> Self {
         Self {
             client: Client::new(),
@@ -194,18 +167,13 @@ impl TraktClient {
         }
     }
 
-    /// Create an authenticated client
+    /// Create an authenticated provider
     pub fn authenticated(client_id: String, access_token: String) -> Self {
         Self {
             client: Client::new(),
             client_id,
             access_token: Some(access_token),
         }
-    }
-
-    /// Check if we have an access token
-    pub fn is_authenticated(&self) -> bool {
-        self.access_token.is_some()
     }
 
     /// Get common headers for API requests
@@ -239,22 +207,242 @@ impl TraktClient {
         req
     }
 
-    // ========== OAuth Authorization Code Flow ==========
+    // ========== Internal API methods ==========
 
-    /// Get the authorization URL for the user to visit
-    pub fn get_authorize_url(&self) -> String {
+    async fn fetch_watchlist(&self) -> Result<Vec<WatchlistItem>, ProviderError> {
+        if !self.is_authenticated() {
+            return Err(ProviderError::NotAuthenticated);
+        }
+
+        debug!("fetching Trakt watchlist");
+
+        let response = self
+            .request(reqwest::Method::GET, "/sync/watchlist?extended=full")
+            .send()
+            .await?;
+
+        if response.status() == 401 {
+            return Err(ProviderError::TokenExpired);
+        }
+
+        if !response.status().is_success() {
+            return Err(ProviderError::InvalidResponse(format!(
+                "watchlist request failed: {}",
+                response.status()
+            )));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    async fn fetch_calendar(&self, days: u32) -> Result<Vec<CalendarItem>, ProviderError> {
+        if !self.is_authenticated() {
+            return Err(ProviderError::NotAuthenticated);
+        }
+
+        debug!(days, "fetching Trakt calendar");
+
+        let today = chrono::Local::now().format("%Y-%m-%d");
+        let endpoint = format!("/calendars/my/shows/{}/{}", today, days);
+
+        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
+
+        if response.status() == 401 {
+            return Err(ProviderError::TokenExpired);
+        }
+
+        if !response.status().is_success() {
+            return Err(ProviderError::InvalidResponse(format!(
+                "calendar request failed: {}",
+                response.status()
+            )));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    async fn fetch_show_recommendations(&self) -> Result<Vec<TraktShow>, ProviderError> {
+        if !self.is_authenticated() {
+            return Err(ProviderError::NotAuthenticated);
+        }
+
+        debug!("fetching Trakt show recommendations");
+
+        let response = self
+            .request(reqwest::Method::GET, "/recommendations/shows?extended=full")
+            .send()
+            .await?;
+
+        if response.status() == 401 {
+            return Err(ProviderError::TokenExpired);
+        }
+
+        if !response.status().is_success() {
+            return Err(ProviderError::InvalidResponse(format!(
+                "recommendations request failed: {}",
+                response.status()
+            )));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    async fn fetch_movie_recommendations(&self) -> Result<Vec<TraktMovie>, ProviderError> {
+        if !self.is_authenticated() {
+            return Err(ProviderError::NotAuthenticated);
+        }
+
+        debug!("fetching Trakt movie recommendations");
+
+        let response = self
+            .request(
+                reqwest::Method::GET,
+                "/recommendations/movies?extended=full",
+            )
+            .send()
+            .await?;
+
+        if response.status() == 401 {
+            return Err(ProviderError::TokenExpired);
+        }
+
+        if !response.status().is_success() {
+            return Err(ProviderError::InvalidResponse(format!(
+                "recommendations request failed: {}",
+                response.status()
+            )));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    async fn fetch_trending_shows(&self, limit: usize) -> Result<Vec<TrendingShow>, ProviderError> {
+        debug!(limit, "fetching Trakt trending shows");
+
+        let endpoint = format!("/shows/trending?extended=full&limit={}", limit);
+        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
+
+        if !response.status().is_success() {
+            return Err(ProviderError::InvalidResponse(format!(
+                "trending shows request failed: {}",
+                response.status()
+            )));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    async fn fetch_trending_movies(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<TrendingMovie>, ProviderError> {
+        debug!(limit, "fetching Trakt trending movies");
+
+        let endpoint = format!("/movies/trending?extended=full&limit={}", limit);
+        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
+
+        if !response.status().is_success() {
+            return Err(ProviderError::InvalidResponse(format!(
+                "trending movies request failed: {}",
+                response.status()
+            )));
+        }
+
+        Ok(response.json().await?)
+    }
+}
+
+#[async_trait]
+impl ContentProvider for TraktProvider {
+    fn name(&self) -> &str {
+        "trakt"
+    }
+
+    fn is_authenticated(&self) -> bool {
+        self.access_token.is_some()
+    }
+
+    async fn trending_movies(&self, limit: usize) -> Result<Vec<DiscoveryItem>, ProviderError> {
+        let movies = self.fetch_trending_movies(limit).await?;
+        Ok(movies
+            .iter()
+            .filter_map(|t| movie_to_discovery(&t.movie))
+            .collect())
+    }
+
+    async fn trending_shows(&self, limit: usize) -> Result<Vec<DiscoveryItem>, ProviderError> {
+        let shows = self.fetch_trending_shows(limit).await?;
+        Ok(shows
+            .iter()
+            .filter_map(|t| show_to_discovery(&t.show))
+            .collect())
+    }
+
+    async fn watchlist(&self) -> Result<Vec<DiscoveryItem>, ProviderError> {
+        let items = self.fetch_watchlist().await?;
+        Ok(items
+            .into_iter()
+            .filter_map(|item| {
+                if let Some(show) = item.show {
+                    show_to_discovery(&show)
+                } else if let Some(movie) = item.movie {
+                    movie_to_discovery(&movie)
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
+    async fn calendar(&self, days: u32) -> Result<Vec<DiscoveryItem>, ProviderError> {
+        let items = self.fetch_calendar(days).await?;
+        Ok(items
+            .into_iter()
+            .filter_map(|item| {
+                let mut discovery = show_to_discovery(&item.show)?;
+                discovery.released = Some(item.first_aired.clone());
+                if let Some(ep_title) = &item.episode.title {
+                    discovery.title = format!(
+                        "{} S{:02}E{:02} - {}",
+                        discovery.title, item.episode.season, item.episode.number, ep_title
+                    );
+                } else {
+                    discovery.title = format!(
+                        "{} S{:02}E{:02}",
+                        discovery.title, item.episode.season, item.episode.number
+                    );
+                }
+                Some(discovery)
+            })
+            .collect())
+    }
+
+    async fn recommendations(&self) -> Result<Vec<DiscoveryItem>, ProviderError> {
+        use itertools::Itertools;
+
+        let (shows, movies) = tokio::try_join!(
+            self.fetch_show_recommendations(),
+            self.fetch_movie_recommendations()
+        )?;
+
+        let show_items = shows.iter().filter_map(show_to_discovery);
+        let movie_items = movies.iter().filter_map(movie_to_discovery);
+
+        Ok(show_items.interleave(movie_items).collect())
+    }
+
+    fn get_authorize_url(&self) -> String {
         format!(
             "https://trakt.tv/oauth/authorize?client_id={}&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code",
             self.client_id
         )
     }
 
-    /// Exchange authorization code for access token
-    pub async fn exchange_code(
+    async fn exchange_code(
         &self,
         code: &str,
         client_secret: &str,
-    ) -> Result<TokenResponse, TraktError> {
+    ) -> Result<TokenResponse, ProviderError> {
         use tracing::{debug, error, info};
 
         info!(
@@ -286,21 +474,26 @@ impl TraktClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             error!("token exchange failed: {} - {}", status, body);
-            return Err(TraktError::InvalidResponse(format!(
+            return Err(ProviderError::InvalidResponse(format!(
                 "token exchange failed: {} - {}",
                 status, body
             )));
         }
 
-        Ok(response.json().await?)
+        let trakt_response: TraktTokenResponse = response.json().await?;
+        Ok(TokenResponse {
+            access_token: trakt_response.access_token,
+            refresh_token: trakt_response.refresh_token,
+            expires_in: trakt_response.expires_in,
+            created_at: trakt_response.created_at,
+        })
     }
 
-    /// Refresh an expired access token
-    pub async fn refresh_token(
+    async fn refresh_token(
         &self,
         refresh_token: &str,
         client_secret: &str,
-    ) -> Result<TokenResponse, TraktError> {
+    ) -> Result<TokenResponse, ProviderError> {
         debug!("refreshing Trakt access token");
 
         let response = self
@@ -316,232 +509,16 @@ impl TraktClient {
             .await?;
 
         if !response.status().is_success() {
-            return Err(TraktError::TokenExpired);
+            return Err(ProviderError::TokenExpired);
         }
 
-        Ok(response.json().await?)
-    }
-
-    // ========== Authenticated Endpoints ==========
-
-    /// Get user's watchlist (requires auth)
-    pub async fn get_watchlist(&self) -> Result<Vec<WatchlistItem>, TraktError> {
-        if !self.is_authenticated() {
-            return Err(TraktError::NotAuthenticated);
-        }
-
-        debug!("fetching Trakt watchlist");
-
-        let response = self
-            .request(reqwest::Method::GET, "/sync/watchlist?extended=full")
-            .send()
-            .await?;
-
-        if response.status() == 401 {
-            return Err(TraktError::TokenExpired);
-        }
-
-        if !response.status().is_success() {
-            return Err(TraktError::InvalidResponse(format!(
-                "watchlist request failed: {}",
-                response.status()
-            )));
-        }
-
-        Ok(response.json().await?)
-    }
-
-    /// Get user's calendar (shows airing in next N days, requires auth)
-    pub async fn get_calendar(&self, days: u32) -> Result<Vec<CalendarItem>, TraktError> {
-        if !self.is_authenticated() {
-            return Err(TraktError::NotAuthenticated);
-        }
-
-        debug!(days, "fetching Trakt calendar");
-
-        // Calendar endpoint uses start_date/days format
-        let today = chrono::Local::now().format("%Y-%m-%d");
-        let endpoint = format!("/calendars/my/shows/{}/{}", today, days);
-
-        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
-
-        if response.status() == 401 {
-            return Err(TraktError::TokenExpired);
-        }
-
-        if !response.status().is_success() {
-            return Err(TraktError::InvalidResponse(format!(
-                "calendar request failed: {}",
-                response.status()
-            )));
-        }
-
-        Ok(response.json().await?)
-    }
-
-    /// Get personalized show recommendations (requires auth)
-    pub async fn get_show_recommendations(&self) -> Result<Vec<RecommendedShow>, TraktError> {
-        if !self.is_authenticated() {
-            return Err(TraktError::NotAuthenticated);
-        }
-
-        debug!("fetching Trakt show recommendations");
-
-        let response = self
-            .request(reqwest::Method::GET, "/recommendations/shows?extended=full")
-            .send()
-            .await?;
-
-        if response.status() == 401 {
-            return Err(TraktError::TokenExpired);
-        }
-
-        if !response.status().is_success() {
-            return Err(TraktError::InvalidResponse(format!(
-                "recommendations request failed: {}",
-                response.status()
-            )));
-        }
-
-        Ok(response.json().await?)
-    }
-
-    /// Get personalized movie recommendations (requires auth)
-    pub async fn get_movie_recommendations(&self) -> Result<Vec<RecommendedMovie>, TraktError> {
-        if !self.is_authenticated() {
-            return Err(TraktError::NotAuthenticated);
-        }
-
-        debug!("fetching Trakt movie recommendations");
-
-        let response = self
-            .request(
-                reqwest::Method::GET,
-                "/recommendations/movies?extended=full",
-            )
-            .send()
-            .await?;
-
-        if response.status() == 401 {
-            return Err(TraktError::TokenExpired);
-        }
-
-        if !response.status().is_success() {
-            return Err(TraktError::InvalidResponse(format!(
-                "recommendations request failed: {}",
-                response.status()
-            )));
-        }
-
-        Ok(response.json().await?)
-    }
-
-    // ========== Public Endpoints (no auth required) ==========
-
-    /// Get trending shows (public)
-    pub async fn get_trending_shows(&self, limit: usize) -> Result<Vec<TrendingShow>, TraktError> {
-        debug!(limit, "fetching Trakt trending shows");
-
-        let endpoint = format!("/shows/trending?extended=full&limit={}", limit);
-        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
-
-        if !response.status().is_success() {
-            return Err(TraktError::InvalidResponse(format!(
-                "trending shows request failed: {}",
-                response.status()
-            )));
-        }
-
-        Ok(response.json().await?)
-    }
-
-    /// Get trending movies (public)
-    pub async fn get_trending_movies(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<TrendingMovie>, TraktError> {
-        debug!(limit, "fetching Trakt trending movies");
-
-        let endpoint = format!("/movies/trending?extended=full&limit={}", limit);
-        let response = self.request(reqwest::Method::GET, &endpoint).send().await?;
-
-        if !response.status().is_success() {
-            return Err(TraktError::InvalidResponse(format!(
-                "trending movies request failed: {}",
-                response.status()
-            )));
-        }
-
-        Ok(response.json().await?)
-    }
-
-    // ========== Helper methods for discovery ==========
-
-    /// Convert watchlist to discovery items
-    pub fn watchlist_to_discovery(items: Vec<WatchlistItem>) -> Vec<TraktDiscoveryItem> {
-        items
-            .into_iter()
-            .filter_map(|item| {
-                if let Some(show) = item.show {
-                    TraktDiscoveryItem::from_show(&show)
-                } else if let Some(movie) = item.movie {
-                    TraktDiscoveryItem::from_movie(&movie)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// Convert calendar to discovery items
-    pub fn calendar_to_discovery(items: Vec<CalendarItem>) -> Vec<TraktDiscoveryItem> {
-        items
-            .into_iter()
-            .filter_map(|item| {
-                let mut discovery = TraktDiscoveryItem::from_show(&item.show)?;
-                // Override with episode air date
-                discovery.released = Some(item.first_aired.clone());
-                // Add episode info to title
-                if let Some(ep_title) = &item.episode.title {
-                    discovery.title = format!(
-                        "{} S{:02}E{:02} - {}",
-                        discovery.title, item.episode.season, item.episode.number, ep_title
-                    );
-                } else {
-                    discovery.title = format!(
-                        "{} S{:02}E{:02}",
-                        discovery.title, item.episode.season, item.episode.number
-                    );
-                }
-                Some(discovery)
-            })
-            .collect()
-    }
-
-    /// Convert recommendations to discovery items
-    pub fn recommendations_to_discovery(
-        shows: Vec<RecommendedShow>,
-        movies: Vec<RecommendedMovie>,
-    ) -> Vec<TraktDiscoveryItem> {
-        use itertools::Itertools;
-        let show_items = shows.iter().filter_map(TraktDiscoveryItem::from_show);
-        let movie_items = movies.iter().filter_map(TraktDiscoveryItem::from_movie);
-        show_items.interleave(movie_items).collect()
-    }
-
-    /// Convert trending to discovery items
-    pub fn trending_to_discovery(
-        shows: Vec<TrendingShow>,
-        movies: Vec<TrendingMovie>,
-    ) -> Vec<TraktDiscoveryItem> {
-        use itertools::Itertools;
-        let show_items = shows
-            .iter()
-            .filter_map(|t| TraktDiscoveryItem::from_show(&t.show));
-        let movie_items = movies
-            .iter()
-            .filter_map(|t| TraktDiscoveryItem::from_movie(&t.movie));
-        show_items.interleave(movie_items).collect()
+        let trakt_response: TraktTokenResponse = response.json().await?;
+        Ok(TokenResponse {
+            access_token: trakt_response.access_token,
+            refresh_token: trakt_response.refresh_token,
+            expires_in: trakt_response.expires_in,
+            created_at: trakt_response.created_at,
+        })
     }
 }
 
@@ -550,15 +527,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_trakt_client_creation() {
-        let client = TraktClient::new("test-client-id".to_string());
-        assert!(!client.is_authenticated());
+    fn test_provider_creation() {
+        let provider = TraktProvider::new("test-client-id".to_string());
+        assert!(!provider.is_authenticated());
+        assert_eq!(provider.name(), "trakt");
 
-        let auth_client = TraktClient::authenticated(
+        let auth_provider = TraktProvider::authenticated(
             "test-client-id".to_string(),
             "test-access-token".to_string(),
         );
-        assert!(auth_client.is_authenticated());
+        assert!(auth_provider.is_authenticated());
     }
 
     #[test]
@@ -576,8 +554,9 @@ mod tests {
             status: Some("ended".to_string()),
         };
 
-        let item = TraktDiscoveryItem::from_show(&show).unwrap();
+        let item = show_to_discovery(&show).unwrap();
         assert_eq!(item.id, 1396);
+        assert_eq!(item.provider_id, 1388);
         assert_eq!(item.title, "Breaking Bad");
         assert_eq!(item.year, Some(2008));
         assert_eq!(item.media_type, "tv");
@@ -598,8 +577,9 @@ mod tests {
             released: Some("2010-07-16".to_string()),
         };
 
-        let item = TraktDiscoveryItem::from_movie(&movie).unwrap();
+        let item = movie_to_discovery(&movie).unwrap();
         assert_eq!(item.id, 27205);
+        assert_eq!(item.provider_id, 16662);
         assert_eq!(item.title, "Inception");
         assert_eq!(item.media_type, "movie");
         assert!(item.is_released);
@@ -625,7 +605,7 @@ mod tests {
             released: Some(future_date),
         };
 
-        let item = TraktDiscoveryItem::from_movie(&movie).unwrap();
+        let item = movie_to_discovery(&movie).unwrap();
         assert!(!item.is_released);
     }
 }

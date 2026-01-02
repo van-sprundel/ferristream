@@ -24,11 +24,12 @@ use crate::doctor::{self, CheckResult};
 use crate::extensions::{ExtensionManager, MediaInfo, PlaybackEvent, parse_episode_info};
 use crate::history::WatchHistory;
 use crate::opensubtitles::OpenSubtitlesClient;
+use crate::providers::{ContentProvider, DiscoveryItem as ProviderDiscoveryItem, TraktProvider};
 use crate::prowlarr::ProwlarrClient;
+use crate::scrobblers::ScrobblerManager;
 use crate::streaming::{self, StreamingSession, TorrentValidation, VideoFile, sort_episodes};
 use crate::tmdb::{TmdbClient, parse_torrent_title};
 use crate::torznab::{TorrentResult, TorznabClient};
-use crate::trakt::TraktClient;
 
 /// Messages sent from background tasks to the UI
 pub enum UiMessage {
@@ -96,125 +97,145 @@ const TRENDING_ITEM_COUNT: usize = 10;
 
 fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
     let tx = tx.clone();
-    let trakt_config = config.extensions.trakt.clone();
+    let providers_config = config.providers.clone();
 
     tokio::spawn(async move {
         let mut rows = Vec::new();
 
-        // Check if we have Trakt credentials (user-provided or embedded)
-        let Some(client_id) = trakt_config.get_client_id().map(String::from) else {
-            let _ = tx
-                .send(UiMessage::DiscoveryError(
-                    "Trakt not configured. Go to Settings → Trakt to authenticate.".to_string(),
-                ))
-                .await;
-            return;
-        };
+        // Check which provider to use for discovery
+        let provider_name = providers_config.discovery.as_deref();
 
-        if trakt_config.is_authenticated() && !trakt_config.is_token_expired() {
-            // Authenticated: fetch personalized content
-            let client = TraktClient::authenticated(
-                client_id,
-                trakt_config.access_token.clone().unwrap_or_default(),
-            );
+        match provider_name {
+            Some("trakt") | None => {
+                // Use Trakt as the discovery provider (default if no provider specified but trakt is configured)
+                let trakt_config = &providers_config.trakt;
 
-            // Fetch all data in parallel
-            let (watchlist_res, calendar_res, rec_shows_res, rec_movies_res) = tokio::join!(
-                client.get_watchlist(),
-                client.get_calendar(CALENDAR_DAYS),
-                client.get_show_recommendations(),
-                client.get_movie_recommendations()
-            );
+                // Check if we have Trakt credentials (user-provided or embedded)
+                let Some(client_id) = trakt_config.get_client_id().map(String::from) else {
+                    if provider_name.is_some() {
+                        // Only show error if Trakt was explicitly configured
+                        let _ = tx
+                            .send(UiMessage::DiscoveryError(
+                                "Trakt not configured. Go to Settings → Trakt to authenticate."
+                                    .to_string(),
+                            ))
+                            .await;
+                    }
+                    return;
+                };
 
-            // Row 1: Watchlist
-            match watchlist_res {
-                Ok(watchlist) => {
-                    let items: Vec<DiscoveryItem> = TraktClient::watchlist_to_discovery(watchlist)
-                        .into_iter()
-                        .take(WATCHLIST_ITEM_COUNT)
-                        .map(DiscoveryItem::from)
-                        .collect();
-                    if !items.is_empty() {
+                if trakt_config.is_authenticated() && !trakt_config.is_token_expired() {
+                    // Authenticated: fetch personalized content
+                    let provider = TraktProvider::authenticated(
+                        client_id,
+                        trakt_config.access_token.clone().unwrap_or_default(),
+                    );
+
+                    // Fetch all data in parallel
+                    let (watchlist_res, calendar_res, recommendations_res) = tokio::join!(
+                        provider.watchlist(),
+                        provider.calendar(CALENDAR_DAYS),
+                        provider.recommendations()
+                    );
+
+                    // Row 1: Watchlist
+                    match watchlist_res {
+                        Ok(watchlist) => {
+                            let items: Vec<DiscoveryItem> = watchlist
+                                .into_iter()
+                                .take(WATCHLIST_ITEM_COUNT)
+                                .map(DiscoveryItem::from)
+                                .collect();
+                            if !items.is_empty() {
+                                rows.push(DiscoveryRow {
+                                    title: "My Watchlist".to_string(),
+                                    items,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to load watchlist");
+                        }
+                    }
+
+                    // Row 2: Up Next (calendar)
+                    match calendar_res {
+                        Ok(calendar) => {
+                            let items: Vec<DiscoveryItem> =
+                                calendar.into_iter().map(DiscoveryItem::from).collect();
+                            if !items.is_empty() {
+                                rows.push(DiscoveryRow {
+                                    title: "Up Next".to_string(),
+                                    items,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to load calendar");
+                        }
+                    }
+
+                    // Row 3: Recommendations
+                    match recommendations_res {
+                        Ok(recommendations) => {
+                            let items: Vec<DiscoveryItem> = recommendations
+                                .into_iter()
+                                .take(RECOMMENDATIONS_ITEM_COUNT)
+                                .map(DiscoveryItem::from)
+                                .collect();
+                            if !items.is_empty() {
+                                rows.push(DiscoveryRow {
+                                    title: "Recommended".to_string(),
+                                    items,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to load recommendations");
+                        }
+                    }
+                } else {
+                    // Not authenticated: fetch public trending content
+                    let provider = TraktProvider::new(client_id);
+
+                    let (trending_shows_res, trending_movies_res) = tokio::join!(
+                        provider.trending_shows(TRENDING_ITEM_COUNT),
+                        provider.trending_movies(TRENDING_ITEM_COUNT)
+                    );
+
+                    let mut trending_items: Vec<DiscoveryItem> = Vec::new();
+
+                    if let Ok(shows) = trending_shows_res {
+                        trending_items.extend(shows.into_iter().map(DiscoveryItem::from));
+                    }
+                    if let Ok(movies) = trending_movies_res {
+                        trending_items.extend(movies.into_iter().map(DiscoveryItem::from));
+                    }
+
+                    if !trending_items.is_empty() {
                         rows.push(DiscoveryRow {
-                            title: "My Watchlist".to_string(),
-                            items,
+                            title: "Trending".to_string(),
+                            items: trending_items,
                         });
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to load Trakt watchlist");
-                }
-            }
 
-            // Row 2: Up Next (calendar)
-            match calendar_res {
-                Ok(calendar) => {
-                    let items: Vec<DiscoveryItem> = TraktClient::calendar_to_discovery(calendar)
-                        .into_iter()
-                        .map(DiscoveryItem::from)
-                        .collect();
-                    if !items.is_empty() {
-                        rows.push(DiscoveryRow {
-                            title: "Up Next".to_string(),
-                            items,
-                        });
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to load Trakt calendar");
+                    // Add a hint row about authentication
+                    rows.push(DiscoveryRow {
+                        title: "Connect Trakt for personalized content".to_string(),
+                        items: vec![],
+                    });
                 }
             }
-
-            // Row 3: Recommendations
-            let rec_shows = rec_shows_res.unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to load Trakt show recommendations");
-                Vec::new()
-            });
-            let rec_movies = rec_movies_res.unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to load Trakt movie recommendations");
-                Vec::new()
-            });
-            let rec_items: Vec<DiscoveryItem> =
-                TraktClient::recommendations_to_discovery(rec_shows, rec_movies)
-                    .into_iter()
-                    .take(RECOMMENDATIONS_ITEM_COUNT)
-                    .map(DiscoveryItem::from)
-                    .collect();
-            if !rec_items.is_empty() {
-                rows.push(DiscoveryRow {
-                    title: "Recommended".to_string(),
-                    items: rec_items,
-                });
+            // Future: Some("simkl") => { ... }
+            Some(other) => {
+                let _ = tx
+                    .send(UiMessage::DiscoveryError(format!(
+                        "Unknown discovery provider: {}",
+                        other
+                    )))
+                    .await;
+                return;
             }
-        } else {
-            // Not authenticated: fetch public trending content
-            let client = TraktClient::new(client_id);
-
-            let (trending_shows_res, trending_movies_res) = tokio::join!(
-                client.get_trending_shows(TRENDING_ITEM_COUNT),
-                client.get_trending_movies(TRENDING_ITEM_COUNT)
-            );
-
-            let trending_shows = trending_shows_res.unwrap_or_default();
-            let trending_movies = trending_movies_res.unwrap_or_default();
-            let trending_items: Vec<DiscoveryItem> =
-                TraktClient::trending_to_discovery(trending_shows, trending_movies)
-                    .into_iter()
-                    .map(DiscoveryItem::from)
-                    .collect();
-
-            if !trending_items.is_empty() {
-                rows.push(DiscoveryRow {
-                    title: "Trending".to_string(),
-                    items: trending_items,
-                });
-            }
-
-            // Add a hint row about authentication
-            rows.push(DiscoveryRow {
-                title: "Connect Trakt for personalized content".to_string(),
-                items: vec![],
-            });
         }
 
         if rows.is_empty() {
@@ -232,8 +253,8 @@ fn load_discovery_data(tx: &mpsc::Sender<UiMessage>, config: &Config) {
 /// Start Trakt device authentication flow
 /// Generate Trakt auth URL and optionally open in browser
 fn start_trakt_auth(client_id: &str) -> String {
-    let client = TraktClient::new(client_id.to_string());
-    let auth_url = client.get_authorize_url();
+    let provider = TraktProvider::new(client_id.to_string());
+    let auth_url = provider.get_authorize_url();
 
     // Try to open in browser
     let _ = open::that(&auth_url);
@@ -251,9 +272,9 @@ fn exchange_trakt_code(
     let tx = tx.clone();
 
     tokio::spawn(async move {
-        let client = TraktClient::new(client_id);
+        let provider = TraktProvider::new(client_id);
 
-        match client.exchange_code(&code, &client_secret).await {
+        match provider.exchange_code(&code, &client_secret).await {
             Ok(token) => {
                 let _ = tx
                     .send(UiMessage::TraktAuthComplete {
@@ -394,6 +415,7 @@ fn spawn_tv_details_fetch(tv_id: u64, tx: mpsc::Sender<UiMessage>, tmdb_apikey: 
 pub async fn run(
     config: Config,
     ext_manager: ExtensionManager,
+    scrobbler_manager: ScrobblerManager,
     open_settings: bool,
 ) -> io::Result<()> {
     // Set up panic hook to restore terminal
@@ -427,13 +449,15 @@ pub async fn run(
         &mut app,
         &mut config,
         &ext_manager,
+        &scrobbler_manager,
         tx,
         &mut rx,
     )
     .await;
 
-    // Shutdown extensions
+    // Shutdown extensions and scrobblers
     ext_manager.shutdown();
+    scrobbler_manager.shutdown();
 
     // Restore terminal
     disable_raw_mode()?;
@@ -452,6 +476,7 @@ async fn run_app(
     app: &mut App,
     config: &mut Config,
     ext_manager: &ExtensionManager,
+    scrobbler_manager: &ScrobblerManager,
     tx: mpsc::Sender<UiMessage>,
     rx: &mut mpsc::Receiver<UiMessage>,
 ) -> io::Result<()> {
@@ -685,12 +710,16 @@ async fn run_app(
                     expires_in,
                 } => {
                     // Save tokens to config
-                    config.extensions.trakt.access_token = Some(access_token);
-                    config.extensions.trakt.refresh_token = Some(refresh_token);
-                    config.extensions.trakt.enabled = true;
+                    config.providers.trakt.access_token = Some(access_token);
+                    config.providers.trakt.refresh_token = Some(refresh_token);
+                    // Enable both discovery and scrobbling on successful auth
+                    config.providers.discovery = Some("trakt".to_string());
+                    if !config.scrobblers.enabled.contains(&"trakt".to_string()) {
+                        config.scrobblers.enabled.push("trakt".to_string());
+                    }
                     // Calculate expiry timestamp
                     let expires_at = Some(::chrono::Utc::now().timestamp() + expires_in as i64);
-                    config.extensions.trakt.expires_at = expires_at;
+                    config.providers.trakt.expires_at = expires_at;
                     // Save config
                     if let Err(e) = config.save() {
                         error!("Failed to save Trakt config: {}", e);
@@ -745,9 +774,9 @@ async fn run_app(
                         };
                         app.view = View::Streaming;
 
-                        // Notify extensions
+                        // Notify extensions and scrobblers
                         let (season, episode) = parse_episode_info(&file.name);
-                        ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
+                        let media_info = MediaInfo {
                             title: app.current_title.clone(),
                             file_name: file.name.clone(),
                             total_bytes: file.size,
@@ -757,7 +786,9 @@ async fn run_app(
                             poster_url: app.current_poster_url.clone(),
                             season,
                             episode,
-                        }));
+                        };
+                        ext_manager.broadcast(PlaybackEvent::Started(media_info.clone()));
+                        scrobbler_manager.on_start(&media_info);
 
                         // Launch player task for single file
                         let tx = tx.clone();
@@ -935,9 +966,9 @@ async fn run_app(
                         app.resume_progress = progress;
                     }
 
-                    // Notify extensions
+                    // Notify extensions and scrobblers
                     let (season, episode) = parse_episode_info(&file_name);
-                    ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
+                    let media_info = MediaInfo {
                         title: app.current_title.clone(),
                         file_name,
                         total_bytes: app.download_progress.total_bytes,
@@ -947,7 +978,9 @@ async fn run_app(
                         poster_url: app.current_poster_url.clone(),
                         season,
                         episode,
-                    }));
+                    };
+                    ext_manager.broadcast(PlaybackEvent::Started(media_info.clone()));
+                    scrobbler_manager.on_start(&media_info);
                 }
                 UiMessage::StreamError(e) => {
                     app.streaming_state = StreamingState::Error(e);
@@ -968,20 +1001,22 @@ async fn run_app(
                         app.download_progress.progress_percent
                     };
                     let (season, episode) = parse_episode_info(&app.current_file);
+                    let media_info = MediaInfo {
+                        title: app.current_title.clone(),
+                        file_name: app.current_file.clone(),
+                        total_bytes: app.download_progress.total_bytes,
+                        tmdb_id: app.current_tmdb_id,
+                        year: app.current_year.map(|y| y as u32),
+                        media_type: app.current_media_type.clone(),
+                        poster_url: app.current_poster_url.clone(),
+                        season,
+                        episode,
+                    };
                     ext_manager.broadcast(PlaybackEvent::Stopped {
-                        media: MediaInfo {
-                            title: app.current_title.clone(),
-                            file_name: app.current_file.clone(),
-                            total_bytes: app.download_progress.total_bytes,
-                            tmdb_id: app.current_tmdb_id,
-                            year: app.current_year.map(|y| y as u32),
-                            media_type: app.current_media_type.clone(),
-                            poster_url: app.current_poster_url.clone(),
-                            season,
-                            episode,
-                        },
+                        media: media_info.clone(),
                         watched_percent,
                     });
+                    scrobbler_manager.on_stop(&media_info, watched_percent);
 
                     // Save watch progress to history
                     let history_key =
@@ -1003,9 +1038,9 @@ async fn run_app(
                                 stream_url: next_file.stream_url.clone(),
                             };
 
-                            // Notify extensions about new episode
+                            // Notify extensions and scrobblers about new episode
                             let (season, episode) = parse_episode_info(&next_file.name);
-                            ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
+                            let media_info = MediaInfo {
                                 title: app.current_title.clone(),
                                 file_name: next_file.name.clone(),
                                 total_bytes: next_file.size,
@@ -1015,7 +1050,9 @@ async fn run_app(
                                 poster_url: app.current_poster_url.clone(),
                                 season,
                                 episode,
-                            }));
+                            };
+                            ext_manager.broadcast(PlaybackEvent::Started(media_info.clone()));
+                            scrobbler_manager.on_start(&media_info);
 
                             // Pre-download the episode after this one
                             if let (Some(after_next), Some(session), Some(torrent_info)) = (
@@ -1815,9 +1852,9 @@ async fn run_app(
                             };
                             app.view = View::Streaming;
 
-                            // Notify extensions
+                            // Notify extensions and scrobblers
                             let (season, episode) = parse_episode_info(&file.name);
-                            ext_manager.broadcast(PlaybackEvent::Started(MediaInfo {
+                            let media_info = MediaInfo {
                                 title: app.current_title.clone(),
                                 file_name: file.name.clone(),
                                 total_bytes: file.size,
@@ -1827,7 +1864,9 @@ async fn run_app(
                                 poster_url: app.current_poster_url.clone(),
                                 season,
                                 episode,
-                            }));
+                            };
+                            ext_manager.broadcast(PlaybackEvent::Started(media_info.clone()));
+                            scrobbler_manager.on_start(&media_info);
 
                             // Pre-download next episode if available
                             if let Some(next_file) = app.next_episode() {
@@ -2153,7 +2192,7 @@ async fn run_app(
                                 {
                                     // Status field - start OAuth flow if client_id is available
                                     if let Some(client_id) =
-                                        config.extensions.trakt.get_client_id().map(String::from)
+                                        config.providers.trakt.get_client_id().map(String::from)
                                     {
                                         // Save any pending changes first
                                         if app.settings_dirty {
@@ -2208,10 +2247,10 @@ async fn run_app(
                             // Submit the code
                             if !app.trakt_auth_code_input.is_empty()
                                 && let Some(client_id) =
-                                    config.extensions.trakt.get_client_id().map(String::from)
+                                    config.providers.trakt.get_client_id().map(String::from)
                             {
                                 let client_secret = config
-                                    .extensions
+                                    .providers
                                     .trakt
                                     .client_secret
                                     .clone()
@@ -2288,15 +2327,15 @@ fn get_settings_field_value(app: &App, config: &Config) -> String {
             _ => String::new(),
         },
         SettingsSection::Trakt => match app.settings_field_index {
-            0 => config.extensions.trakt.enabled.to_string(),
-            1 => config
-                .extensions
-                .trakt
-                .client_id
-                .clone()
-                .unwrap_or_default(),
+            0 => {
+                // Return current enable status for editing
+                let discovery = config.providers.discovery.as_deref() == Some("trakt");
+                let scrobbling = config.scrobblers.enabled.contains(&"trakt".to_string());
+                (discovery || scrobbling).to_string()
+            }
+            1 => config.providers.trakt.client_id.clone().unwrap_or_default(),
             2 => config
-                .extensions
+                .providers
                 .trakt
                 .client_secret
                 .clone()
@@ -2362,13 +2401,27 @@ fn apply_settings_edit(app: &App, config: &mut Config) {
             _ => {}
         },
         SettingsSection::Trakt => match app.settings_field_index {
-            0 => config.extensions.trakt.enabled = value.to_lowercase() == "true",
+            0 => {
+                // Toggle both discovery and scrobbling together
+                let enable = value.to_lowercase() == "true";
+                if enable {
+                    config.providers.discovery = Some("trakt".to_string());
+                    if !config.scrobblers.enabled.contains(&"trakt".to_string()) {
+                        config.scrobblers.enabled.push("trakt".to_string());
+                    }
+                } else {
+                    if config.providers.discovery.as_deref() == Some("trakt") {
+                        config.providers.discovery = None;
+                    }
+                    config.scrobblers.enabled.retain(|s| s != "trakt");
+                }
+            }
             1 => {
-                config.extensions.trakt.client_id =
+                config.providers.trakt.client_id =
                     if value.is_empty() { None } else { Some(value) };
             }
             2 => {
-                config.extensions.trakt.client_secret =
+                config.providers.trakt.client_secret =
                     if value.is_empty() { None } else { Some(value) };
             }
             3 => {} // Status field is read-only
@@ -2389,7 +2442,22 @@ fn toggle_settings_bool(app: &App, config: &mut Config) -> bool {
             true
         }
         SettingsSection::Trakt if app.settings_field_index == 0 => {
-            config.extensions.trakt.enabled = !config.extensions.trakt.enabled;
+            // Toggle both discovery and scrobbling together
+            let currently_enabled = config.providers.discovery.as_deref() == Some("trakt")
+                || config.scrobblers.enabled.contains(&"trakt".to_string());
+            if currently_enabled {
+                // Disable both
+                if config.providers.discovery.as_deref() == Some("trakt") {
+                    config.providers.discovery = None;
+                }
+                config.scrobblers.enabled.retain(|s| s != "trakt");
+            } else {
+                // Enable both
+                config.providers.discovery = Some("trakt".to_string());
+                if !config.scrobblers.enabled.contains(&"trakt".to_string()) {
+                    config.scrobblers.enabled.push("trakt".to_string());
+                }
+            }
             true
         }
         _ => false,

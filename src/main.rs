@@ -5,15 +5,17 @@ mod doctor;
 mod extensions;
 mod history;
 mod opensubtitles;
+mod providers;
 mod prowlarr;
+mod scrobblers;
 mod streaming;
 mod tmdb;
 mod torznab;
-mod trakt;
 mod tui;
 
 use config::Config;
-use extensions::{DiscordExtension, ExtensionManager, TraktExtension};
+use extensions::{DiscordExtension, ExtensionManager};
+use scrobblers::ScrobblerManager;
 use std::fs::File;
 use tracing_subscriber::EnvFilter;
 
@@ -66,7 +68,7 @@ async fn main() {
         }
     };
 
-    // Initialize extensions
+    // Initialize extensions (Discord RPC, etc.)
     let mut ext_manager = ExtensionManager::new();
 
     if config.extensions.discord.enabled {
@@ -75,14 +77,28 @@ async fn main() {
         )));
     }
 
-    if config.extensions.trakt.enabled {
-        ext_manager.register(Box::new(TraktExtension::new(
-            config.extensions.trakt.client_id.clone(),
-            config.extensions.trakt.access_token.clone(),
-        )));
+    // Initialize scrobblers (Trakt, SIMKL, etc.)
+    let mut scrobbler_manager = ScrobblerManager::new();
+
+    for scrobbler_name in &config.scrobblers.enabled {
+        match scrobbler_name.as_str() {
+            "trakt" => {
+                if let Some(scrobbler) = scrobblers::create_scrobbler(
+                    "trakt",
+                    config.providers.trakt.get_client_id().map(String::from),
+                    config.providers.trakt.access_token.clone(),
+                ) {
+                    scrobbler_manager.register(scrobbler);
+                }
+            }
+            // Future: "simkl" => { ... }
+            other => {
+                tracing::warn!(scrobbler = other, "unknown scrobbler, skipping");
+            }
+        }
     }
 
-    let result = tui::run(config, ext_manager, is_new).await;
+    let result = tui::run(config, ext_manager, scrobbler_manager, is_new).await;
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);

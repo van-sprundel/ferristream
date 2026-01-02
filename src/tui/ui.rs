@@ -1150,9 +1150,9 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
             ),
         ],
         SettingsSection::Trakt => {
-            let has_client_id = config.extensions.trakt.get_client_id().is_some();
-            let auth_status = if config.extensions.trakt.is_authenticated() {
-                if config.extensions.trakt.is_token_expired() {
+            let has_client_id = config.providers.trakt.get_client_id().is_some();
+            let auth_status = if config.providers.trakt.is_authenticated() {
+                if config.providers.trakt.is_token_expired() {
                     "⚠ Token expired - Enter to re-authenticate".to_string()
                 } else {
                     "✓ Authenticated".to_string()
@@ -1163,20 +1163,22 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                 "No API credentials available".to_string()
             };
 
+            // Check if Trakt is enabled for discovery and/or scrobbling
+            let discovery_enabled = config.providers.discovery.as_deref() == Some("trakt");
+            let scrobbling_enabled = config.scrobblers.enabled.contains(&"trakt".to_string());
+            let enabled_status = match (discovery_enabled, scrobbling_enabled) {
+                (true, true) => "Discovery + Scrobbling",
+                (true, false) => "Discovery only",
+                (false, true) => "Scrobbling only",
+                (false, false) => "Disabled",
+            };
+
             vec![
-                (
-                    "Enabled",
-                    if config.extensions.trakt.enabled {
-                        "Yes".to_string()
-                    } else {
-                        "No".to_string()
-                    },
-                    false,
-                ),
+                ("Enabled", enabled_status.to_string(), false),
                 (
                     "Client ID",
                     config
-                        .extensions
+                        .providers
                         .trakt
                         .client_id
                         .as_ref()
@@ -1193,7 +1195,7 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
                 (
                     "Client Secret",
                     config
-                        .extensions
+                        .providers
                         .trakt
                         .client_secret
                         .as_ref()
