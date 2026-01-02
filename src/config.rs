@@ -28,6 +28,10 @@ pub struct Config {
     #[serde(default)]
     pub extensions: ExtensionsConfig,
     #[serde(default)]
+    pub providers: ProvidersConfig,
+    #[serde(default)]
+    pub scrobblers: ScrobblersConfig,
+    #[serde(default)]
     pub subtitles: SubtitlesConfig,
     #[serde(default)]
     pub streaming: StreamingConfig,
@@ -37,8 +41,25 @@ pub struct Config {
 pub struct ExtensionsConfig {
     #[serde(default)]
     pub discord: DiscordConfig,
+}
+
+/// Content discovery providers configuration
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ProvidersConfig {
+    /// Which provider to use for discovery ("trakt", "simkl", or omit for none)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<String>,
     #[serde(default)]
     pub trakt: TraktConfig,
+    // Future: pub simkl: SimklConfig,
+}
+
+/// Watch history scrobblers configuration
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ScrobblersConfig {
+    /// List of enabled scrobblers (e.g., ["trakt", "simkl"])
+    #[serde(default)]
+    pub enabled: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -49,10 +70,9 @@ pub struct DiscordConfig {
     pub app_id: Option<String>,
 }
 
+/// Trakt.tv configuration (used by both provider and scrobbler)
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TraktConfig {
-    #[serde(default)]
-    pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -277,6 +297,8 @@ impl Default for Config {
             player: PlayerConfig::default(),
             storage: StorageConfig::default(),
             extensions: ExtensionsConfig::default(),
+            providers: ProvidersConfig::default(),
+            scrobblers: ScrobblersConfig::default(),
             subtitles: SubtitlesConfig::default(),
             streaming: StreamingConfig::default(),
         }
@@ -459,8 +481,9 @@ mod tests {
         assert_eq!(config.streaming.auto_race, 10);
         assert!(config.extensions.discord.app_id.is_none());
         assert!(!config.extensions.discord.enabled);
-        assert!(config.extensions.trakt.client_id.is_none());
-        assert!(!config.extensions.trakt.enabled);
+        assert!(config.providers.discovery.is_none());
+        assert!(config.providers.trakt.client_id.is_none());
+        assert!(config.scrobblers.enabled.is_empty());
     }
 
     #[test]
@@ -527,12 +550,17 @@ mod tests {
                     enabled: true,
                     app_id: Some("discord-id".to_string()),
                 },
+            },
+            providers: ProvidersConfig {
+                discovery: Some("trakt".to_string()),
                 trakt: TraktConfig {
-                    enabled: true,
                     client_id: Some("trakt-id".to_string()),
                     access_token: Some("trakt-token".to_string()),
                     ..Default::default()
                 },
+            },
+            scrobblers: ScrobblersConfig {
+                enabled: vec!["trakt".to_string()],
             },
         };
 
@@ -551,6 +579,8 @@ mod tests {
         assert_eq!(parsed.subtitles.language, config.subtitles.language);
         assert_eq!(parsed.streaming.auto_race, config.streaming.auto_race);
         assert_eq!(parsed.storage.temp_dir, config.storage.temp_dir);
+        assert_eq!(parsed.providers.discovery, config.providers.discovery);
+        assert_eq!(parsed.scrobblers.enabled, config.scrobblers.enabled);
     }
 
     #[test]
@@ -558,9 +588,20 @@ mod tests {
         let extensions = ExtensionsConfig::default();
         assert!(!extensions.discord.enabled);
         assert!(extensions.discord.app_id.is_none());
-        assert!(!extensions.trakt.enabled);
-        assert!(extensions.trakt.client_id.is_none());
-        assert!(extensions.trakt.access_token.is_none());
+    }
+
+    #[test]
+    fn test_providers_config_default() {
+        let providers = ProvidersConfig::default();
+        assert!(providers.discovery.is_none());
+        assert!(providers.trakt.client_id.is_none());
+        assert!(providers.trakt.access_token.is_none());
+    }
+
+    #[test]
+    fn test_scrobblers_config_default() {
+        let scrobblers = ScrobblersConfig::default();
+        assert!(scrobblers.enabled.is_empty());
     }
 
     #[test]

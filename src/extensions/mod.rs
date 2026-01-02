@@ -1,8 +1,6 @@
 pub mod discord;
-pub mod trakt;
 
 pub use discord::DiscordExtension;
-pub use trakt::TraktExtension;
 
 use once_cell::sync::Lazy;
 use regex::Regex;

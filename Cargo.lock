@@ -795,6 +795,7 @@ dependencies = [
 name = "ferristream"
 version = "0.0.17"
 dependencies = [
+ "async-trait",
  "chrono",
  "crossterm",
  "directories",

@@ -1,4 +1,10 @@
-use super::{Extension, MediaInfo, PlaybackEvent};
+//! Trakt.tv scrobbler
+//!
+//! Syncs watch history to Trakt.tv when playback starts/stops.
+//! Requires `client_id` and `access_token` in config.
+
+use super::Scrobbler;
+use crate::extensions::MediaInfo;
 use reqwest::Client;
 use serde::Serialize;
 use std::sync::Arc;
@@ -6,11 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const TRAKT_API_URL: &str = "https://api.trakt.tv";
 
-/// Trakt.tv scrobbling extension
-///
-/// Syncs watch history to Trakt.tv.
-/// Requires `client_id` and `access_token` in config.
-pub struct TraktExtension {
+/// Trakt.tv scrobbler
+pub struct TraktScrobbler {
     enabled: Arc<AtomicBool>,
     client: Client,
     client_id: Option<String>,
@@ -57,7 +60,7 @@ struct ScrobbleIds {
     tmdb: Option<u64>,
 }
 
-impl TraktExtension {
+impl TraktScrobbler {
     pub fn new(client_id: Option<String>, access_token: Option<String>) -> Self {
         Self {
             enabled: Arc::new(AtomicBool::new(false)),
@@ -181,52 +184,47 @@ impl TraktExtension {
     }
 }
 
-impl Extension for TraktExtension {
+impl Scrobbler for TraktScrobbler {
     fn name(&self) -> &str {
         "trakt"
     }
 
     fn on_init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.client_id.is_none() || self.access_token.is_none() {
-            return Err("trakt extension requires client_id and access_token in config".into());
+            return Err("trakt scrobbler requires client_id and access_token in config".into());
         }
 
-        tracing::info!("trakt: extension initialized");
+        tracing::info!("trakt: scrobbler initialized");
         self.enabled.store(true, Ordering::SeqCst);
         Ok(())
     }
 
-    fn on_event(&self, event: &PlaybackEvent) {
+    fn on_start(&self, media: &MediaInfo) {
         if !self.enabled.load(Ordering::SeqCst) {
             return;
         }
 
-        match event {
-            PlaybackEvent::Started(media) => {
-                tracing::debug!(title = %media.title, "trakt: started watching");
-                self.scrobble("start", media, 0.0);
-            }
-            PlaybackEvent::Progress { .. } => {
-                // Don't send progress updates - too noisy
-            }
-            PlaybackEvent::Stopped {
-                media,
-                watched_percent,
-            } => {
-                tracing::debug!(
-                    title = %media.title,
-                    watched = watched_percent,
-                    threshold = self.scrobble_threshold,
-                    "trakt: stopped watching"
-                );
+        tracing::debug!(title = %media.title, "trakt: started watching");
+        self.scrobble("start", media, 0.0);
+    }
 
-                // Trakt auto-scrobbles if progress > 80%, but we send the accurate progress
-                self.scrobble("stop", media, *watched_percent);
-            }
+    fn on_stop(&self, media: &MediaInfo, watched_percent: f64) {
+        if !self.enabled.load(Ordering::SeqCst) {
+            return;
         }
+
+        tracing::debug!(
+            title = %media.title,
+            watched = watched_percent,
+            threshold = self.scrobble_threshold,
+            "trakt: stopped watching"
+        );
+
+        // Trakt auto-scrobbles if progress > 80%, but we send the accurate progress
+        self.scrobble("stop", media, watched_percent);
     }
 
     fn on_shutdown(&self) {
-        tracing::debug!("trakt: extension shutdown");
+        tracing::debug!("trakt: scrobbler shutdown");
     }
 }
