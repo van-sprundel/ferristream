@@ -826,6 +826,104 @@ fn draw_streaming(frame: &mut Frame, app: &App) {
             );
         frame.render_widget(popup, popup_area);
     }
+
+    // Subtitle warning overlay
+    if app.show_subtitle_warning {
+        let area = frame.area();
+        let popup_width = 55.min(area.width.saturating_sub(4));
+        let popup_height = 7;
+        let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+        let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        // Clear area behind popup
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let warning_text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No subtitle file found",
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Yellow),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("c", Style::default().fg(Color::Cyan)),
+                Span::raw(" - Continue  |  "),
+                Span::styled("q", Style::default().fg(Color::Cyan)),
+                Span::raw(" - Cancel"),
+            ]),
+        ];
+
+        let popup = Paragraph::new(warning_text)
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title("Subtitle Warning"),
+            );
+        frame.render_widget(popup, popup_area);
+    }
+
+    // Rating prompt overlay
+    if app.show_rating_prompt {
+        let area = frame.area();
+        let popup_width = 60.min(area.width.saturating_sub(4));
+        let popup_height = 11;
+        let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+        let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        // Clear area behind popup
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        // Create rating stars display
+        let mut rating_text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "Rate this on Trakt (1-10)",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+        ];
+
+        // Show star rating selector
+        let stars: Vec<Span> = (1..=10)
+            .map(|i| {
+                if app.selected_rating.is_some_and(|rating| i <= rating) {
+                    Span::styled("★", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::styled("☆", Style::default().fg(Color::DarkGray))
+                }
+            })
+            .collect();
+        rating_text.push(Line::from(stars));
+
+        rating_text.push(Line::from(""));
+        rating_text.push(Line::from(""));
+        rating_text.push(Line::from(vec![
+            Span::styled("1-9,0", Style::default().fg(Color::Cyan)),
+            Span::raw(" - Select rating  |  "),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" - Submit  |  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" - Skip"),
+        ]));
+
+        let popup = Paragraph::new(rating_text)
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title("Rate on Trakt"),
+            );
+        frame.render_widget(popup, popup_area);
+    }
 }
 
 fn draw_doctor(frame: &mut Frame, app: &App) {

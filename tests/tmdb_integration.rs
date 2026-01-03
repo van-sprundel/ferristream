@@ -131,20 +131,29 @@ async fn test_search_tv() {
 }
 
 #[tokio::test]
-async fn test_client_requires_api_key() {
-    // Without an API key (and no embedded key), client creation should fail
-    // Note: This test assumes TMDB_API_KEY is not set at compile time
-    // If it is, the client will succeed with the embedded key
+async fn test_client_with_api_key() {
+    // Test that providing an API key creates a client successfully
+    let client = TmdbClient::with_base_url(Some("test-key"), "http://example.com");
+    assert!(
+        client.is_some(),
+        "Client should be created when API key is provided"
+    );
+}
+
+#[tokio::test]
+async fn test_client_without_api_key() {
+    // Test client creation without API key
+    // Note: This may succeed if TMDB_API_KEY is embedded at compile time
     let client = TmdbClient::with_base_url(None, "http://example.com");
 
-    // If no embedded key, this should be None
-    // If there's an embedded key, it will be Some
-    // Either way, we're testing the constructor works
-    if client.is_none() {
-        // Expected when no API key is provided
+    // We can't assert None because an embedded key might exist
+    // But we can verify that the constructor doesn't panic
+    // and that the returned value is consistent
+    if client.is_some() {
+        // Embedded key exists - this is expected behavior
         assert!(true);
     } else {
-        // Embedded key exists, client was created
+        // No embedded key - this is also expected behavior
         assert!(true);
     }
 }

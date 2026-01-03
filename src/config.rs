@@ -223,9 +223,8 @@ impl Config {
     pub fn load_or_create() -> Result<Self, ConfigError> {
         let path = Self::config_path()?;
         if !path.exists() {
-            let config = Self::default();
-            config.save()?;
-            return Ok(config);
+            // Return default config without saving - wizard will save after user input
+            return Ok(Self::default());
         }
         Self::load_from(&path)
     }

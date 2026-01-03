@@ -9,6 +9,7 @@ pub use app::{
 use std::io;
 use std::time::Duration;
 
+use chrono::Datelike;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
@@ -82,6 +83,8 @@ pub enum UiMessage {
     },
     /// Trakt auth error
     TraktAuthError(String),
+    /// Subtitle not found warning
+    SubtitleWarning,
 }
 
 fn restore_terminal() {
@@ -880,6 +883,12 @@ async fn run_app(
                                 return;
                             }
 
+                            // Warn user if subtitles are enabled but none were found
+                            if subtitles_enabled && subtitle_url.is_none() {
+                                info!("subtitles enabled but none found, showing warning");
+                                let _ = tx.send(UiMessage::SubtitleWarning).await;
+                            }
+
                             info!(player = %player_command, "launching player");
                             match streaming::launch_player(
                                 &player_command,
@@ -1125,16 +1134,49 @@ async fn run_app(
 
                                     // Find subtitle
                                     let subtitle_url = if subtitles_enabled {
-                                        subtitle_files
+                                        let from_torrent = subtitle_files
                                             .iter()
                                             .find(|s| {
                                                 s.language.as_deref() == Some(&preferred_language)
                                             })
                                             .or_else(|| subtitle_files.first())
-                                            .map(|s| s.stream_url.clone())
+                                            .map(|s| s.stream_url.clone());
+
+                                        if from_torrent.is_some() {
+                                            from_torrent
+                                        } else if let (Some(api_key), Some(tmdb)) =
+                                            (&opensubtitles_key, tmdb_id)
+                                        {
+                                            info!(
+                                                "no subtitles in torrent for next episode, trying OpenSubtitles"
+                                            );
+                                            let os_client = OpenSubtitlesClient::new(api_key);
+                                            match os_client
+                                                .search_by_tmdb(tmdb, &preferred_language)
+                                                .await
+                                            {
+                                                Ok(subs) => {
+                                                    subs.first().map(|s| s.download_url.clone())
+                                                }
+                                                Err(e) => {
+                                                    debug!(error = %e, "OpenSubtitles search failed for next episode");
+                                                    None
+                                                }
+                                            }
+                                        } else {
+                                            None
+                                        }
                                     } else {
                                         None
                                     };
+
+                                    // Warn user if subtitles are enabled but none were found
+                                    if subtitles_enabled && subtitle_url.is_none() {
+                                        info!(
+                                            "subtitles enabled but none found for next episode, showing warning"
+                                        );
+                                        let _ = tx.send(UiMessage::SubtitleWarning).await;
+                                    }
 
                                     // Launch player
                                     match streaming::launch_player(
@@ -1212,25 +1254,67 @@ async fn run_app(
                         app.view = View::FileSelection;
                         app.streaming_state = StreamingState::FetchingMetadata;
                     } else {
-                        // No next episode or single file - cleanup and go back
-                        if let Some(session) = streaming_session.take() {
-                            session.cleanup().await;
-                        }
-                        pending_torrent_info = None;
-                        app.available_files.clear();
-                        app.current_file.clear();
-                        app.current_title.clear();
-                        app.racing_message = None;
-                        // Go back to Search if auto-race is enabled (user never saw Results)
-                        app.view = if config.streaming.auto_race > 0 {
-                            View::Discovery
+                        // No next episode or single file
+                        // Show rating prompt for movies if Trakt is authenticated and watched >50%
+                        let is_movie = app.current_media_type.as_deref() == Some("movie");
+                        let is_trakt_authenticated = config.providers.trakt.is_authenticated();
+
+                        if is_movie && is_trakt_authenticated && watched_percent >= 50.0 {
+                            info!("showing rating prompt for movie");
+                            app.show_rating_prompt = true;
+                            app.selected_rating = None;
                         } else {
-                            View::Results
-                        };
-                        app.streaming_state = StreamingState::Connecting;
-                        app.is_streaming = false;
+                            // Mark as watched on Trakt if >80% and authenticated (but not showing rating prompt)
+                            if is_trakt_authenticated
+                                && watched_percent >= 80.0
+                                && let (Some(client_id), Some(access_token)) = (
+                                    config.providers.trakt.get_client_id(),
+                                    config.providers.trakt.access_token.as_deref(),
+                                )
+                            {
+                                let title = app.current_title.clone();
+                                let year = app
+                                    .current_year
+                                    .unwrap_or_else(|| chrono::Utc::now().year() as u16);
+                                let tmdb_id = app.current_tmdb_id;
+                                let provider = TraktProvider::authenticated(
+                                    client_id.to_string(),
+                                    access_token.to_string(),
+                                );
+
+                                tokio::spawn(async move {
+                                    if let Err(e) =
+                                        provider.mark_movie_watched(title, year, tmdb_id).await
+                                    {
+                                        error!(error = %e, "Failed to mark as watched on Trakt");
+                                    }
+                                });
+                            }
+
+                            // cleanup and go back
+                            if let Some(session) = streaming_session.take() {
+                                session.cleanup().await;
+                            }
+                            pending_torrent_info = None;
+                            app.available_files.clear();
+                            app.current_file.clear();
+                            app.current_title.clear();
+                            app.racing_message = None;
+                            // Go back to Search if auto-race is enabled (user never saw Results)
+                            app.view = if config.streaming.auto_race > 0 {
+                                View::Discovery
+                            } else {
+                                View::Results
+                            };
+                            app.streaming_state = StreamingState::Connecting;
+                            app.is_streaming = false;
+                        }
                         info!("streaming ended, ready for next");
                     }
+                }
+                UiMessage::SubtitleWarning => {
+                    app.show_subtitle_warning = true;
+                    info!("showing subtitle warning to user");
                 }
             }
         }
@@ -2054,6 +2138,142 @@ async fn run_app(
                 },
 
                 View::Streaming => match key.code {
+                    // Rating prompt handlers
+                    KeyCode::Char(c @ '1'..='9') if app.show_rating_prompt => {
+                        app.selected_rating = Some(c.to_digit(10).unwrap());
+                    }
+                    KeyCode::Char('0') if app.show_rating_prompt => {
+                        app.selected_rating = Some(10);
+                    }
+                    KeyCode::Enter if app.show_rating_prompt && app.selected_rating.is_some() => {
+                        // Submit rating to Trakt
+                        if let (Some(client_id), Some(access_token)) = (
+                            config.providers.trakt.get_client_id(),
+                            config.providers.trakt.access_token.as_deref(),
+                        ) {
+                            let title = app.current_title.clone();
+                            let year = app
+                                .current_year
+                                .unwrap_or_else(|| chrono::Utc::now().year() as u16);
+                            let tmdb_id = app.current_tmdb_id;
+                            let rating = app.selected_rating.unwrap(); // Safe: checked by guard condition
+                            let provider = TraktProvider::authenticated(
+                                client_id.to_string(),
+                                access_token.to_string(),
+                            );
+
+                            tokio::spawn(async move {
+                                // Rate and mark as watched
+                                if let Err(e) = provider
+                                    .rate_movie(title.clone(), year, tmdb_id, rating)
+                                    .await
+                                {
+                                    error!(error = %e, "Failed to rate on Trakt");
+                                }
+                                if let Err(e) =
+                                    provider.mark_movie_watched(title, year, tmdb_id).await
+                                {
+                                    error!(error = %e, "Failed to mark as watched on Trakt");
+                                }
+                            });
+                        }
+                        app.show_rating_prompt = false;
+                        let submitted_rating = app.selected_rating.take();
+                        info!(rating = ?submitted_rating, "user rated content on Trakt");
+
+                        // Cleanup and navigate back
+                        if let Some(session) = streaming_session.take() {
+                            session.cleanup().await;
+                        }
+                        pending_torrent_info = None;
+                        app.available_files.clear();
+                        app.current_file.clear();
+                        app.current_title.clear();
+                        app.racing_message = None;
+                        app.view = if config.streaming.auto_race > 0 {
+                            View::Discovery
+                        } else {
+                            View::Results
+                        };
+                        app.streaming_state = StreamingState::Connecting;
+                        app.is_streaming = false;
+                    }
+                    KeyCode::Esc if app.show_rating_prompt => {
+                        // Skip rating but still mark as watched if >80%
+                        let watched_percent = if app.playback_progress > 0.0 {
+                            app.playback_progress
+                        } else {
+                            app.download_progress.progress_percent
+                        };
+
+                        if watched_percent >= 80.0
+                            && let (Some(client_id), Some(access_token)) = (
+                                config.providers.trakt.get_client_id(),
+                                config.providers.trakt.access_token.as_deref(),
+                            )
+                        {
+                            let title = app.current_title.clone();
+                            let year = app
+                                .current_year
+                                .unwrap_or_else(|| chrono::Utc::now().year() as u16);
+                            let tmdb_id = app.current_tmdb_id;
+                            let provider = TraktProvider::authenticated(
+                                client_id.to_string(),
+                                access_token.to_string(),
+                            );
+
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    provider.mark_movie_watched(title, year, tmdb_id).await
+                                {
+                                    error!(error = %e, "Failed to mark as watched on Trakt");
+                                }
+                            });
+                        }
+                        app.show_rating_prompt = false;
+                        app.selected_rating = None;
+                        info!("user skipped rating");
+
+                        // Cleanup and navigate back
+                        if let Some(session) = streaming_session.take() {
+                            session.cleanup().await;
+                        }
+                        pending_torrent_info = None;
+                        app.available_files.clear();
+                        app.current_file.clear();
+                        app.current_title.clear();
+                        app.racing_message = None;
+                        app.view = if config.streaming.auto_race > 0 {
+                            View::Discovery
+                        } else {
+                            View::Results
+                        };
+                        app.streaming_state = StreamingState::Connecting;
+                        app.is_streaming = false;
+                    }
+                    KeyCode::Char('c') if app.show_subtitle_warning => {
+                        // Continue without subtitles
+                        app.show_subtitle_warning = false;
+                        info!("user chose to continue without subtitles");
+                    }
+                    KeyCode::Char('q') if app.show_subtitle_warning => {
+                        // Cancel streaming - go back to file selection or results
+                        app.show_subtitle_warning = false;
+                        if let Some(cancel) = streaming_cancel.take() {
+                            info!("user cancelled streaming due to missing subtitles");
+                            cancel.cancel();
+                        }
+                        if let Some(session) = streaming_session.take() {
+                            drop(session);
+                        }
+                        app.view = if app.selected_result().is_some() {
+                            View::FileSelection
+                        } else {
+                            View::Results
+                        };
+                        app.streaming_state = StreamingState::Connecting;
+                        app.is_streaming = false;
+                    }
                     KeyCode::Char('r') if app.show_resume_prompt => {
                         // Resume from saved position
                         app.show_resume_prompt = false;
@@ -2074,7 +2294,7 @@ async fn run_app(
                         watch_history.save();
                         info!("user chose to start from beginning");
                     }
-                    KeyCode::Char('q') | KeyCode::Esc if !app.show_resume_prompt => {
+                    KeyCode::Char('q') | KeyCode::Esc if !app.has_active_prompt() => {
                         // Cancel streaming task if running
                         if let Some(cancel) = streaming_cancel.take() {
                             info!("user cancelled streaming");
@@ -2097,7 +2317,7 @@ async fn run_app(
                         app.streaming_state = StreamingState::Connecting;
                         app.is_streaming = false;
                     }
-                    KeyCode::Char('n') if app.has_next_episode() && !app.show_resume_prompt => {
+                    KeyCode::Char('n') if app.has_next_episode() && !app.has_active_prompt() => {
                         // Skip to next episode - cancel current player
                         if let Some(cancel) = streaming_cancel.take() {
                             info!("user skipping to next episode");

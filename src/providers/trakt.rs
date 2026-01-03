@@ -8,7 +8,7 @@
 use super::{ContentProvider, DiscoveryItem, ProviderError, TokenResponse};
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 const TRAKT_API_URL: &str = "https://api.trakt.tv";
@@ -148,6 +148,60 @@ fn movie_to_discovery(movie: &TraktMovie) -> Option<DiscoveryItem> {
     })
 }
 
+// ========== Rating and History API Types ==========
+
+/// Request body for adding items to history (marking as watched)
+#[derive(Debug, Clone, Serialize)]
+struct HistoryRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    movies: Option<Vec<HistoryMovie>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    episodes: Option<Vec<HistoryEpisode>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HistoryMovie {
+    title: String,
+    year: u16,
+    ids: HistoryIds,
+}
+
+// TODO: Add support for marking TV episodes as watched
+#[derive(Debug, Clone, Serialize)]
+struct HistoryEpisode {
+    ids: HistoryIds,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HistoryIds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tmdb: Option<u64>,
+}
+
+/// Request body for rating items
+#[derive(Debug, Clone, Serialize)]
+struct RatingRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    movies: Option<Vec<RatingMovie>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    episodes: Option<Vec<RatingEpisode>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RatingMovie {
+    title: String,
+    year: u16,
+    ids: HistoryIds,
+    rating: u32, // 1-10
+}
+
+// TODO: Add support for rating TV episodes
+#[derive(Debug, Clone, Serialize)]
+struct RatingEpisode {
+    ids: HistoryIds,
+    rating: u32, // 1-10
+}
+
 // ========== TraktProvider ==========
 
 /// Trakt.tv content provider
@@ -205,6 +259,109 @@ impl TraktProvider {
         }
 
         req
+    }
+
+    // ========== Public API methods ==========
+
+    /// Mark a movie as watched in Trakt history
+    pub async fn mark_movie_watched(
+        &self,
+        title: String,
+        year: u16,
+        tmdb_id: Option<u64>,
+    ) -> Result<(), ProviderError> {
+        if self.access_token.is_none() {
+            return Err(ProviderError::NotAuthenticated);
+        }
+
+        let request = HistoryRequest {
+            movies: Some(vec![HistoryMovie {
+                title,
+                year,
+                ids: HistoryIds { tmdb: tmdb_id },
+            }]),
+            episodes: None,
+        };
+
+        debug!("marking movie as watched: {:?}", request);
+
+        let response = self
+            .request(reqwest::Method::POST, "/sync/history")
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            let error_msg = match status.as_u16() {
+                401 => "Authentication failed - please re-authenticate with Trakt".to_string(),
+                422 => format!("Validation error - invalid data: {}", error_text),
+                429 => "Rate limit exceeded - please try again later".to_string(),
+                500..=599 => "Trakt server error - please try again later".to_string(),
+                _ => format!(
+                    "Failed to mark as watched (status {}): {}",
+                    status, error_text
+                ),
+            };
+            return Err(ProviderError::InvalidResponse(error_msg));
+        }
+
+        debug!("Successfully marked movie as watched on Trakt");
+        Ok(())
+    }
+
+    /// Rate a movie on Trakt (1-10)
+    pub async fn rate_movie(
+        &self,
+        title: String,
+        year: u16,
+        tmdb_id: Option<u64>,
+        rating: u32,
+    ) -> Result<(), ProviderError> {
+        if self.access_token.is_none() {
+            return Err(ProviderError::NotAuthenticated);
+        }
+
+        if !(1..=10).contains(&rating) {
+            return Err(ProviderError::InvalidResponse(
+                "Rating must be between 1 and 10".to_string(),
+            ));
+        }
+
+        let request = RatingRequest {
+            movies: Some(vec![RatingMovie {
+                title,
+                year,
+                ids: HistoryIds { tmdb: tmdb_id },
+                rating,
+            }]),
+            episodes: None,
+        };
+
+        debug!("rating movie: {:?}", request);
+
+        let response = self
+            .request(reqwest::Method::POST, "/sync/ratings")
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            let error_msg = match status.as_u16() {
+                401 => "Authentication failed - please re-authenticate with Trakt".to_string(),
+                422 => format!("Validation error - invalid rating data: {}", error_text),
+                429 => "Rate limit exceeded - please try again later".to_string(),
+                500..=599 => "Trakt server error - please try again later".to_string(),
+                _ => format!("Failed to rate (status {}): {}", status, error_text),
+            };
+            return Err(ProviderError::InvalidResponse(error_msg));
+        }
+
+        debug!("Successfully rated movie on Trakt");
+        Ok(())
     }
 
     // ========== Internal API methods ==========
