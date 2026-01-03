@@ -289,6 +289,13 @@ pub struct App {
     pub show_resume_prompt: bool,
     pub resume_progress: f64, // Progress percentage to resume from
 
+    // Subtitle warning
+    pub show_subtitle_warning: bool,
+
+    // Trakt rating prompt
+    pub show_rating_prompt: bool,
+    pub selected_rating: Option<u32>, // None = not selected, Some(1-10) = rating
+
     // Playback tracking (from mpv IPC)
     pub playback_progress: f64, // Actual playback progress from player
 
@@ -420,6 +427,9 @@ impl App {
             wizard_edit_buffer: String::new(),
             show_resume_prompt: false,
             resume_progress: 0.0,
+            show_subtitle_warning: false,
+            show_rating_prompt: false,
+            selected_rating: None,
             playback_progress: 0.0,
             racing_message: None,
             discovery_rows: Vec::new(),
@@ -635,5 +645,10 @@ impl App {
         self.discovery_rows
             .get(self.selected_row_index)
             .and_then(|row| row.items.get(self.selected_item_index))
+    }
+
+    /// Check if any prompts are currently active (resume, subtitle warning, or rating)
+    pub fn has_active_prompt(&self) -> bool {
+        self.show_resume_prompt || self.show_subtitle_warning || self.show_rating_prompt
     }
 }

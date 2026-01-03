@@ -163,6 +163,8 @@ impl WatchHistory {
 mod tests {
     use super::*;
 
+    const SECONDS_PER_DAY: u64 = 86400; // 24 * 60 * 60
+
     #[test]
     fn test_make_key_with_tmdb_id() {
         let key = WatchHistory::make_key(Some(12345), "ignored_filename.mkv");
@@ -335,7 +337,7 @@ mod tests {
             "recent".to_string(),
             WatchEntry {
                 progress_percent: 50.0,
-                last_watched: now - (1 * 24 * 60 * 60), // 1 day ago
+                last_watched: now - SECONDS_PER_DAY, // 1 day ago
                 title: "Recent".to_string(),
             },
         );
@@ -345,7 +347,7 @@ mod tests {
             "old".to_string(),
             WatchEntry {
                 progress_percent: 50.0,
-                last_watched: now - (31 * 24 * 60 * 60), // 31 days ago
+                last_watched: now - (31 * SECONDS_PER_DAY), // 31 days ago
                 title: "Old".to_string(),
             },
         );
