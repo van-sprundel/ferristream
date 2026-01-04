@@ -144,16 +144,7 @@ async fn test_client_with_api_key() {
 async fn test_client_without_api_key() {
     // Test client creation without API key
     // Note: This may succeed if TMDB_API_KEY is embedded at compile time
-    let client = TmdbClient::with_base_url(None, "http://example.com");
-
-    // We can't assert None because an embedded key might exist
-    // But we can verify that the constructor doesn't panic
-    // and that the returned value is consistent
-    if client.is_some() {
-        // Embedded key exists - this is expected behavior
-        assert!(true);
-    } else {
-        // No embedded key - this is also expected behavior
-        assert!(true);
-    }
+    // This test verifies the constructor doesn't panic - both Some and None are valid outcomes
+    let _client = TmdbClient::with_base_url(None, "http://example.com");
+    // Test passes as long as the constructor completes without panicking
 }

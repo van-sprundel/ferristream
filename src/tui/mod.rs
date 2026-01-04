@@ -306,6 +306,7 @@ fn spawn_torrent_search(
     tx: mpsc::Sender<UiMessage>,
     prowlarr_url: String,
     prowlarr_apikey: String,
+    cancel_token: CancellationToken,
 ) {
     use futures::stream::{self, StreamExt};
 
@@ -322,6 +323,12 @@ fn spawn_torrent_search(
 
         match prowlarr.get_usable_indexers().await {
             Ok(indexers) => {
+                // Check if cancelled before proceeding
+                if cancel_token.is_cancelled() {
+                    debug!(search_id, "search cancelled before indexer queries");
+                    return;
+                }
+
                 if indexers.is_empty() {
                     let _ = tx
                         .send(UiMessage::SearchError(
@@ -363,6 +370,12 @@ fn spawn_torrent_search(
                     stream::iter(search_futures).buffer_unordered(MAX_CONCURRENT_SEARCHES);
 
                 while let Some((indexer_name, result)) = results_stream.next().await {
+                    // Check for cancellation while collecting results
+                    if cancel_token.is_cancelled() {
+                        debug!(search_id, "search cancelled while collecting results");
+                        return;
+                    }
+
                     match result {
                         Ok(results) => {
                             debug!(
@@ -498,6 +511,8 @@ async fn run_app(
     let mut streaming_session: Option<std::sync::Arc<StreamingSession>> = None;
     // Cancellation token for streaming task
     let mut streaming_cancel: Option<CancellationToken> = None;
+    // Cancellation token for search task
+    let mut search_cancel: Option<CancellationToken> = None;
     // Stored torrent info for file selection
     let mut pending_torrent_info: Option<crate::streaming::TorrentInfo> = None;
 
@@ -538,6 +553,27 @@ async fn run_app(
                         // Check if auto-race is enabled
                         let auto_race = config.streaming.auto_race as usize;
                         if auto_race > 0 && !app.is_streaming {
+                            // Copy TMDB metadata to current_* fields (same as when manually selecting from Results)
+                            app.current_title = app
+                                .tmdb_info
+                                .as_ref()
+                                .map(|t| t.title.clone())
+                                .unwrap_or_else(|| app.search_input.clone());
+                            app.current_tmdb_id = app.tmdb_info.as_ref().and_then(|t| t.id);
+                            app.current_year = app.tmdb_info.as_ref().and_then(|t| t.year);
+                            app.current_media_type =
+                                app.tmdb_info.as_ref().and_then(|t| t.media_type.clone());
+                            app.current_poster_url =
+                                app.tmdb_info.as_ref().and_then(|t| t.poster_url.clone());
+
+                            info!(
+                                title = %app.current_title,
+                                tmdb_id = ?app.current_tmdb_id,
+                                year = ?app.current_year,
+                                media_type = ?app.current_media_type,
+                                "auto-race: set metadata from TMDB"
+                            );
+
                             // Clean up any previous streaming session
                             if let Some(cancel) = streaming_cancel.take() {
                                 cancel.cancel();
@@ -1259,6 +1295,14 @@ async fn run_app(
                         let is_movie = app.current_media_type.as_deref() == Some("movie");
                         let is_trakt_authenticated = config.providers.trakt.is_authenticated();
 
+                        info!(
+                            media_type = ?app.current_media_type,
+                            is_movie = %is_movie,
+                            is_trakt_authenticated = %is_trakt_authenticated,
+                            watched_percent = %watched_percent,
+                            "checking if should show rating prompt"
+                        );
+
                         if is_movie && is_trakt_authenticated && watched_percent >= 50.0 {
                             info!("showing rating prompt for movie");
                             app.show_rating_prompt = true;
@@ -1282,11 +1326,18 @@ async fn run_app(
                                     access_token.to_string(),
                                 );
 
+                                info!(title = %title, year = %year, tmdb_id = ?tmdb_id, "marking movie as watched on Trakt (no rating prompt)");
                                 tokio::spawn(async move {
-                                    if let Err(e) =
-                                        provider.mark_movie_watched(title, year, tmdb_id).await
+                                    match provider
+                                        .mark_movie_watched(title.clone(), year, tmdb_id)
+                                        .await
                                     {
-                                        error!(error = %e, "Failed to mark as watched on Trakt");
+                                        Ok(_) => {
+                                            info!(title = %title, "Successfully marked movie as watched on Trakt")
+                                        }
+                                        Err(e) => {
+                                            error!(error = %e, title = %title, "Failed to mark as watched on Trakt")
+                                        }
                                     }
                                 });
                             }
@@ -1474,12 +1525,23 @@ async fn run_app(
                                 app.search_input = search_query.clone();
                                 app.search_error = None;
 
+                                // Cancel previous search if running
+                                if let Some(cancel) = search_cancel.take() {
+                                    cancel.cancel();
+                                    debug!("cancelled previous search");
+                                }
+
+                                // Create new cancellation token for this search
+                                let cancel_token = CancellationToken::new();
+                                search_cancel = Some(cancel_token.clone());
+
                                 spawn_torrent_search(
                                     search_query,
                                     app.search_id,
                                     tx.clone(),
                                     config.prowlarr.url.clone(),
                                     config.prowlarr.apikey.clone(),
+                                    cancel_token,
                                 );
 
                                 // Navigate to Results view
@@ -1530,12 +1592,23 @@ async fn run_app(
                             app.is_searching = true;
                             app.search_error = None;
                             app.tmdb_info = None;
+
+                            // Cancel previous search if running
+                            if let Some(cancel) = search_cancel.take() {
+                                cancel.cancel();
+                                debug!("cancelled previous search");
+                            }
+
                             let query = app.search_input.clone();
                             let current_search_id = app.search_id;
                             let tx = tx.clone();
                             let prowlarr_url = config.prowlarr.url.clone();
                             let prowlarr_apikey = config.prowlarr.apikey.clone();
                             let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
+
+                            // Create new cancellation token for this search
+                            let cancel_token = CancellationToken::new();
+                            search_cancel = Some(cancel_token.clone());
 
                             // Spawn TMDB lookup task in parallel
                             let tmdb_tx = tx.clone();
@@ -1567,6 +1640,7 @@ async fn run_app(
                                 tx.clone(),
                                 prowlarr_url,
                                 prowlarr_apikey,
+                                cancel_token,
                             );
                         }
                     }
@@ -2162,18 +2236,30 @@ async fn run_app(
                                 access_token.to_string(),
                             );
 
+                            info!(title = %title, year = %year, rating = %rating, tmdb_id = ?tmdb_id, "submitting rating to Trakt");
                             tokio::spawn(async move {
                                 // Rate and mark as watched
-                                if let Err(e) = provider
+                                match provider
                                     .rate_movie(title.clone(), year, tmdb_id, rating)
                                     .await
                                 {
-                                    error!(error = %e, "Failed to rate on Trakt");
+                                    Ok(_) => {
+                                        info!(title = %title, rating = %rating, "Successfully rated movie on Trakt")
+                                    }
+                                    Err(e) => {
+                                        error!(error = %e, title = %title, "Failed to rate on Trakt")
+                                    }
                                 }
-                                if let Err(e) =
-                                    provider.mark_movie_watched(title, year, tmdb_id).await
+                                match provider
+                                    .mark_movie_watched(title.clone(), year, tmdb_id)
+                                    .await
                                 {
-                                    error!(error = %e, "Failed to mark as watched on Trakt");
+                                    Ok(_) => {
+                                        info!(title = %title, "Successfully marked as watched on Trakt")
+                                    }
+                                    Err(e) => {
+                                        error!(error = %e, title = %title, "Failed to mark as watched on Trakt")
+                                    }
                                 }
                             });
                         }
@@ -2222,11 +2308,18 @@ async fn run_app(
                                 access_token.to_string(),
                             );
 
+                            info!(title = %title, year = %year, tmdb_id = ?tmdb_id, watched_percent = %watched_percent, "marking movie as watched on Trakt (skipped rating)");
                             tokio::spawn(async move {
-                                if let Err(e) =
-                                    provider.mark_movie_watched(title, year, tmdb_id).await
+                                match provider
+                                    .mark_movie_watched(title.clone(), year, tmdb_id)
+                                    .await
                                 {
-                                    error!(error = %e, "Failed to mark as watched on Trakt");
+                                    Ok(_) => {
+                                        info!(title = %title, "Successfully marked movie as watched on Trakt")
+                                    }
+                                    Err(e) => {
+                                        error!(error = %e, title = %title, "Failed to mark as watched on Trakt")
+                                    }
                                 }
                             });
                         }
