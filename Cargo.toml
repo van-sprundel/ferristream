@@ -1,6 +1,6 @@
 [package]
 name = "ferristream"
-version = "0.0.20"
+version = "0.0.21"
 edition = "2024"
 description = "A TUI app for streaming torrents on-the-fly"
 license = "MIT"
