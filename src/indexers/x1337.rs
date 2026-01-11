@@ -3,6 +3,7 @@
 use super::{IndexerError, TorrentIndexer, common};
 use crate::torznab::TorrentResult;
 use async_trait::async_trait;
+use futures::future::join_all;
 use reqwest::Client;
 use scraper::{Html, Selector};
 
@@ -40,6 +41,25 @@ impl X1337Indexer {
         }
 
         Ok(response.text().await?)
+    }
+
+    /// Fetch the magnet URL from a 1337x detail page
+    async fn fetch_magnet_url(&self, detail_url: &str) -> Result<String, IndexerError> {
+        let html = self.fetch_html(detail_url).await?;
+        let document = Html::parse_document(&html);
+
+        // The magnet link is in an anchor with href starting with "magnet:"
+        let magnet_selector = Selector::parse("a[href^='magnet:']")
+            .map_err(|e| IndexerError::ParseError(format!("Invalid selector: {}", e)))?;
+
+        document
+            .select(&magnet_selector)
+            .next()
+            .and_then(|elem| elem.value().attr("href"))
+            .map(String::from)
+            .ok_or_else(|| {
+                IndexerError::ParseError("Magnet link not found on detail page".to_string())
+            })
     }
 
     fn parse_results(&self, html: &str) -> Result<Vec<TorrentResult>, IndexerError> {
@@ -132,9 +152,33 @@ impl TorrentIndexer for X1337Indexer {
         tracing::debug!(url, "1337x: searching");
 
         let html = self.fetch_html(&url).await?;
-        let results = self.parse_results(&html)?;
+        let mut results = self.parse_results(&html)?;
 
-        tracing::debug!(count = results.len(), "1337x: found results");
+        tracing::debug!(
+            count = results.len(),
+            "1337x: found results, fetching magnet URLs"
+        );
+
+        // Fetch magnet URLs from detail pages in parallel
+        let detail_urls: Vec<_> = results.iter().filter_map(|r| r.link.clone()).collect();
+        let magnet_futures: Vec<_> = detail_urls
+            .iter()
+            .map(|detail_url| self.fetch_magnet_url(detail_url))
+            .collect();
+
+        let magnets = join_all(magnet_futures).await;
+
+        // Update results with fetched magnet URLs
+        for (result, magnet_result) in results.iter_mut().zip(magnets.into_iter()) {
+            if let Ok(magnet) = magnet_result {
+                result.magnet_url = Some(magnet);
+            }
+        }
+
+        // Filter out results without magnet URLs
+        results.retain(|r| r.magnet_url.is_some());
+
+        tracing::debug!(count = results.len(), "1337x: results with magnet URLs");
 
         if results.is_empty() {
             Err(IndexerError::NotFound)

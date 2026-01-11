@@ -105,13 +105,16 @@ impl IndexerManager {
 
         let mut all_results = Vec::new();
 
+        // Convert query to String once, then clone for each indexer
+        let query = query.to_string();
+
         // Create search tasks for all enabled indexers
         let search_futures: Vec<_> = self
             .indexers
             .iter()
             .filter(|indexer| indexer.is_enabled())
             .map(|indexer| {
-                let query = query.to_string();
+                let query = query.clone();
                 async move {
                     let name = indexer.name();
                     match indexer.search(&query, categories).await {

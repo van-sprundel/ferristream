@@ -324,21 +324,13 @@ impl Config {
             "embedded" => {
                 // No validation needed - embedded indexers are built-in
             }
-            "prowlarr" => {
-                // Prowlarr mode requires prowlarr config
+            "prowlarr" | "both" => {
+                // Prowlarr or both mode requires prowlarr config
                 if self.prowlarr.is_none() {
-                    return Err(ConfigError::ValidationError(
-                        "indexers.mode is 'prowlarr' but prowlarr config is missing".to_string(),
-                    ));
-                }
-                self.validate_prowlarr_config()?;
-            }
-            "both" => {
-                // Both mode requires prowlarr config
-                if self.prowlarr.is_none() {
-                    return Err(ConfigError::ValidationError(
-                        "indexers.mode is 'both' but prowlarr config is missing".to_string(),
-                    ));
+                    return Err(ConfigError::ValidationError(format!(
+                        "indexers.mode is '{}' but prowlarr config is missing",
+                        self.indexers.mode
+                    )));
                 }
                 self.validate_prowlarr_config()?;
             }

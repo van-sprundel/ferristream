@@ -2574,19 +2574,16 @@ fn apply_settings_edit(app: &App, config: &mut Config) {
 
     match app.settings_section {
         SettingsSection::Prowlarr => {
-            // Ensure prowlarr config exists
-            if config.prowlarr.is_none() {
-                config.prowlarr = Some(crate::config::ProwlarrConfig {
+            let prowlarr = config
+                .prowlarr
+                .get_or_insert_with(|| crate::config::ProwlarrConfig {
                     url: String::new(),
                     apikey: String::new(),
                 });
-            }
-            if let Some(ref mut prowlarr) = config.prowlarr {
-                match app.settings_field_index {
-                    0 => prowlarr.url = value,
-                    1 => prowlarr.apikey = value,
-                    _ => {}
-                }
+            match app.settings_field_index {
+                0 => prowlarr.url = value,
+                1 => prowlarr.apikey = value,
+                _ => {}
             }
         }
         SettingsSection::Tmdb => {
@@ -2746,19 +2743,16 @@ fn apply_wizard_edit(app: &App, config: &mut Config) {
 
     match app.wizard_step {
         WizardStep::Prowlarr => {
-            // Ensure prowlarr config exists
-            if config.prowlarr.is_none() {
-                config.prowlarr = Some(crate::config::ProwlarrConfig {
+            let prowlarr = config
+                .prowlarr
+                .get_or_insert_with(|| crate::config::ProwlarrConfig {
                     url: String::new(),
                     apikey: String::new(),
                 });
-            }
-            if let Some(ref mut prowlarr) = config.prowlarr {
-                match app.wizard_field_index {
-                    0 => prowlarr.url = value,
-                    1 => prowlarr.apikey = value,
-                    _ => {}
-                }
+            match app.wizard_field_index {
+                0 => prowlarr.url = value,
+                1 => prowlarr.apikey = value,
+                _ => {}
             }
         }
         WizardStep::Tmdb => {
