@@ -6,6 +6,10 @@ Stream torrents directly to your media player. Search, select, watch.
 
 Sometimes I just want to try out a movie/series without having to download their entire discography. This tools makes it possible to connect to my indexer, start a sequential torrent and see if I dig it.
 
+## Disclaimer
+
+This project is partly written by Claude Opus 4.5
+
 ## Installation
 
 ### Quick Install (Recommended)
