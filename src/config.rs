@@ -172,12 +172,17 @@ pub struct StreamingConfig {
     /// Automatically race top N torrents and use first to connect (0 = disabled, manual selection)
     #[serde(default = "default_auto_race")]
     pub auto_race: u8,
+    /// SOCKS5 proxy URL for routing torrent traffic (e.g. through a VPN)
+    /// Format: socks5://[username:password@]host:port
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socks_proxy_url: Option<String>,
 }
 
 impl Default for StreamingConfig {
     fn default() -> Self {
         Self {
             auto_race: default_auto_race(),
+            socks_proxy_url: None,
         }
     }
 }
@@ -540,7 +545,10 @@ mod tests {
                 language: "fr".to_string(),
                 opensubtitles_api_key: Some("os-key".to_string()),
             },
-            streaming: StreamingConfig { auto_race: 5 },
+            streaming: StreamingConfig {
+                auto_race: 5,
+                ..Default::default()
+            },
             storage: StorageConfig {
                 temp_dir: Some(PathBuf::from("/tmp/test")),
             },

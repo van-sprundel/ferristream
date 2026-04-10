@@ -607,6 +607,8 @@ async fn run_app(
 
                                 let tx = tx.clone();
                                 let temp_dir = config.storage.temp_dir();
+                                let socks_proxy_url =
+                                    config.streaming.socks_proxy_url.clone();
                                 let cancel_token = CancellationToken::new();
                                 streaming_cancel = Some(cancel_token.clone());
 
@@ -641,7 +643,7 @@ async fn run_app(
                                         })
                                         .await;
 
-                                    let session = match StreamingSession::new(temp_dir).await {
+                                    let session = match StreamingSession::new(temp_dir, socks_proxy_url).await {
                                         Ok(s) => std::sync::Arc::new(s),
                                         Err(e) => {
                                             let _ = tx
@@ -1916,6 +1918,8 @@ async fn run_app(
 
                             let tx = tx.clone();
                             let temp_dir = config.storage.temp_dir();
+                            let socks_proxy_url =
+                                config.streaming.socks_proxy_url.clone();
 
                             // Create cancellation token
                             let cancel_token = CancellationToken::new();
@@ -1929,7 +1933,7 @@ async fn run_app(
                                     return;
                                 }
                                 info!("creating streaming session");
-                                let session = match StreamingSession::new(temp_dir).await {
+                                let session = match StreamingSession::new(temp_dir, socks_proxy_url).await {
                                     Ok(s) => {
                                         info!("session created");
                                         std::sync::Arc::new(s)

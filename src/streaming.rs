@@ -115,7 +115,10 @@ pub struct StreamingSession {
 }
 
 impl StreamingSession {
-    pub async fn new(temp_dir: PathBuf) -> Result<Self, StreamError> {
+    pub async fn new(
+        temp_dir: PathBuf,
+        socks_proxy_url: Option<String>,
+    ) -> Result<Self, StreamError> {
         // Create a unique subdirectory for this session to avoid conflicts
         let session_id = uuid::Uuid::new_v4().to_string();
         let session_temp_dir = temp_dir.join(session_id);
@@ -124,6 +127,10 @@ impl StreamingSession {
             .await
             .map_err(|e| StreamError::SessionError(e.to_string()))?;
 
+        if let Some(ref url) = socks_proxy_url {
+            info!(proxy = %url, "routing torrent traffic through SOCKS5 proxy");
+        }
+
         debug!("creating librqbit session");
         let session_future = Session::new_with_opts(
             session_temp_dir.clone(),
@@ -131,6 +138,7 @@ impl StreamingSession {
                 // Re-enable DHT - needed for magnet resolution
                 disable_dht: false,
                 disable_dht_persistence: true, // Don't persist DHT state
+                socks_proxy_url,
                 ..Default::default()
             },
         );
