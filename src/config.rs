@@ -17,9 +17,12 @@ pub enum ConfigError {
     ValidationError(String),
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Config {
-    pub prowlarr: ProwlarrConfig,
+    #[serde(default)]
+    pub indexers: IndexersConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prowlarr: Option<ProwlarrConfig>,
     pub tmdb: Option<TmdbConfig>,
     #[serde(default)]
     pub player: PlayerConfig,
@@ -117,6 +120,62 @@ impl TraktConfig {
     pub fn can_refresh(&self) -> bool {
         self.client_id.is_some() && self.client_secret.is_some() && self.refresh_token.is_some()
     }
+}
+
+/// Indexers configuration - embedded scrapers and/or Prowlarr
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IndexersConfig {
+    #[serde(default = "default_indexer_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub embedded: EmbeddedIndexersConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flaresolverr: Option<FlareSolverrConfig>,
+}
+
+impl Default for IndexersConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_indexer_mode(),
+            embedded: EmbeddedIndexersConfig::default(),
+            flaresolverr: None,
+        }
+    }
+}
+
+fn default_indexer_mode() -> String {
+    "embedded".to_string()
+}
+
+/// Embedded indexers configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EmbeddedIndexersConfig {
+    #[serde(default = "default_true")]
+    pub x1337: bool,
+    #[serde(default = "default_true")]
+    pub thepiratebay: bool,
+    #[serde(default = "default_true")]
+    pub nyaa: bool,
+}
+
+impl Default for EmbeddedIndexersConfig {
+    fn default() -> Self {
+        Self {
+            x1337: true,
+            thepiratebay: true,
+            nyaa: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// FlareSolverr configuration for Cloudflare bypass
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FlareSolverrConfig {
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -265,22 +324,50 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        // Validate Prowlarr URL
-        if self.prowlarr.url.is_empty() {
+        // Validate indexer mode
+        match self.indexers.mode.as_str() {
+            "embedded" => {
+                // No validation needed - embedded indexers are built-in
+            }
+            "prowlarr" | "both" => {
+                // Prowlarr or both mode requires prowlarr config
+                if self.prowlarr.is_none() {
+                    return Err(ConfigError::ValidationError(format!(
+                        "indexers.mode is '{}' but prowlarr config is missing",
+                        self.indexers.mode
+                    )));
+                }
+                self.validate_prowlarr_config()?;
+            }
+            _ => {
+                return Err(ConfigError::ValidationError(format!(
+                    "invalid indexers.mode: '{}'. Must be 'embedded', 'prowlarr', or 'both'",
+                    self.indexers.mode
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_prowlarr_config(&self) -> Result<(), ConfigError> {
+        let prowlarr = self.prowlarr.as_ref().unwrap();
+
+        if prowlarr.url.is_empty() {
             return Err(ConfigError::ValidationError(
                 "prowlarr.url cannot be empty".to_string(),
             ));
         }
 
         // Strip trailing slash for consistency
-        let url = self.prowlarr.url.trim_end_matches('/');
+        let url = prowlarr.url.trim_end_matches('/');
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(ConfigError::ValidationError(
                 "prowlarr.url must start with http:// or https://".to_string(),
             ));
         }
 
-        if self.prowlarr.apikey.is_empty() {
+        if prowlarr.apikey.is_empty() {
             return Err(ConfigError::ValidationError(
                 "prowlarr.apikey cannot be empty".to_string(),
             ));
@@ -290,38 +377,20 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: String::new(),
-            },
-            tmdb: None,
-            player: PlayerConfig::default(),
-            storage: StorageConfig::default(),
-            extensions: ExtensionsConfig::default(),
-            providers: ProvidersConfig::default(),
-            scrobblers: ScrobblersConfig::default(),
-            subtitles: SubtitlesConfig::default(),
-            streaming: StreamingConfig::default(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_config_validation_empty_url() {
-        let config = Config {
-            prowlarr: ProwlarrConfig {
+        let mut config = Config {
+            prowlarr: Some(ProwlarrConfig {
                 url: String::new(),
                 apikey: "test-key".to_string(),
-            },
+            }),
             ..Default::default()
         };
+        config.indexers.mode = "prowlarr".to_string();
 
         let result = config.validate();
         assert!(result.is_err());
@@ -336,13 +405,14 @@ mod tests {
 
     #[test]
     fn test_config_validation_invalid_url_scheme() {
-        let config = Config {
-            prowlarr: ProwlarrConfig {
+        let mut config = Config {
+            prowlarr: Some(ProwlarrConfig {
                 url: "ftp://localhost:9696".to_string(),
                 apikey: "test-key".to_string(),
-            },
+            }),
             ..Default::default()
         };
+        config.indexers.mode = "prowlarr".to_string();
 
         let result = config.validate();
         assert!(result.is_err());
@@ -356,13 +426,14 @@ mod tests {
 
     #[test]
     fn test_config_validation_no_scheme() {
-        let config = Config {
-            prowlarr: ProwlarrConfig {
+        let mut config = Config {
+            prowlarr: Some(ProwlarrConfig {
                 url: "localhost:9696".to_string(),
                 apikey: "test-key".to_string(),
-            },
+            }),
             ..Default::default()
         };
+        config.indexers.mode = "prowlarr".to_string();
 
         let result = config.validate();
         assert!(result.is_err());
@@ -370,13 +441,14 @@ mod tests {
 
     #[test]
     fn test_config_validation_empty_apikey() {
-        let config = Config {
-            prowlarr: ProwlarrConfig {
+        let mut config = Config {
+            prowlarr: Some(ProwlarrConfig {
                 url: "http://localhost:9696".to_string(),
                 apikey: String::new(),
-            },
+            }),
             ..Default::default()
         };
+        config.indexers.mode = "prowlarr".to_string();
 
         let result = config.validate();
         assert!(result.is_err());
@@ -390,26 +462,28 @@ mod tests {
 
     #[test]
     fn test_config_validation_valid() {
-        let config = Config {
-            prowlarr: ProwlarrConfig {
+        let mut config = Config {
+            prowlarr: Some(ProwlarrConfig {
                 url: "http://localhost:9696".to_string(),
                 apikey: "valid-key".to_string(),
-            },
+            }),
             ..Default::default()
         };
+        config.indexers.mode = "prowlarr".to_string();
 
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_config_validation_https_url() {
-        let config = Config {
-            prowlarr: ProwlarrConfig {
+        let mut config = Config {
+            prowlarr: Some(ProwlarrConfig {
                 url: "https://prowlarr.example.com".to_string(),
                 apikey: "valid-key".to_string(),
-            },
+            }),
             ..Default::default()
         };
+        config.indexers.mode = "prowlarr".to_string();
 
         assert!(config.validate().is_ok());
     }
@@ -437,8 +511,12 @@ mod tests {
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.prowlarr.url, "http://localhost:9696");
-        assert_eq!(config.prowlarr.apikey, "test-key");
+        assert!(config.prowlarr.is_some());
+        assert_eq!(
+            config.prowlarr.as_ref().unwrap().url,
+            "http://localhost:9696"
+        );
+        assert_eq!(config.prowlarr.as_ref().unwrap().apikey, "test-key");
         assert!(config.tmdb.is_some());
         assert_eq!(config.tmdb.unwrap().apikey, "tmdb-key");
         assert_eq!(config.player.command, "vlc");
@@ -456,8 +534,12 @@ mod tests {
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.prowlarr.url, "http://localhost:9696");
-        assert_eq!(config.prowlarr.apikey, "test-key");
+        assert!(config.prowlarr.is_some());
+        assert_eq!(
+            config.prowlarr.as_ref().unwrap().url,
+            "http://localhost:9696"
+        );
+        assert_eq!(config.prowlarr.as_ref().unwrap().apikey, "test-key");
         assert!(config.tmdb.is_none());
     }
 
@@ -476,8 +558,11 @@ mod tests {
     #[test]
     fn test_config_default_values() {
         let config = Config::default();
-        assert_eq!(config.prowlarr.url, "http://localhost:9696");
-        assert_eq!(config.prowlarr.apikey, "");
+        assert_eq!(config.indexers.mode, "embedded");
+        assert!(config.indexers.embedded.x1337);
+        assert!(config.indexers.embedded.thepiratebay);
+        assert!(config.indexers.embedded.nyaa);
+        assert!(config.prowlarr.is_none());
         assert_eq!(config.player.command, "mpv");
         assert!(config.player.args.is_empty());
         assert_eq!(config.subtitles.language, "en");
@@ -529,10 +614,14 @@ mod tests {
     #[test]
     fn test_config_serialization_roundtrip() {
         let config = Config {
-            prowlarr: ProwlarrConfig {
+            indexers: IndexersConfig {
+                mode: "prowlarr".to_string(),
+                ..Default::default()
+            },
+            prowlarr: Some(ProwlarrConfig {
                 url: "https://prowlarr.example.com".to_string(),
                 apikey: "my-api-key".to_string(),
-            },
+            }),
             tmdb: Some(TmdbConfig {
                 apikey: "tmdb-key".to_string(),
             }),
@@ -574,8 +663,14 @@ mod tests {
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
 
-        assert_eq!(parsed.prowlarr.url, config.prowlarr.url);
-        assert_eq!(parsed.prowlarr.apikey, config.prowlarr.apikey);
+        assert_eq!(
+            parsed.prowlarr.as_ref().unwrap().url,
+            config.prowlarr.as_ref().unwrap().url
+        );
+        assert_eq!(
+            parsed.prowlarr.as_ref().unwrap().apikey,
+            config.prowlarr.as_ref().unwrap().apikey
+        );
         assert_eq!(
             parsed.tmdb.as_ref().unwrap().apikey,
             config.tmdb.as_ref().unwrap().apikey
@@ -613,13 +708,14 @@ mod tests {
 
     #[test]
     fn test_config_with_trailing_slash() {
-        let config = Config {
-            prowlarr: ProwlarrConfig {
+        let mut config = Config {
+            prowlarr: Some(ProwlarrConfig {
                 url: "http://localhost:9696/".to_string(),
                 apikey: "test-key".to_string(),
-            },
+            }),
             ..Default::default()
         };
+        config.indexers.mode = "prowlarr".to_string();
 
         // Should pass validation (trailing slash is handled)
         assert!(config.validate().is_ok());

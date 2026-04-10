@@ -26,11 +26,10 @@ use crate::extensions::{ExtensionManager, MediaInfo, PlaybackEvent, parse_episod
 use crate::history::WatchHistory;
 use crate::opensubtitles::OpenSubtitlesClient;
 use crate::providers::{ContentProvider, DiscoveryItem as ProviderDiscoveryItem, TraktProvider};
-use crate::prowlarr::ProwlarrClient;
 use crate::scrobblers::ScrobblerManager;
 use crate::streaming::{self, StreamingSession, TorrentValidation, VideoFile, sort_episodes};
 use crate::tmdb::{TmdbClient, parse_torrent_title};
-use crate::torznab::{TorrentResult, TorznabClient};
+use crate::torznab::TorrentResult;
 
 /// Messages sent from background tasks to the UI
 pub enum UiMessage {
@@ -304,115 +303,40 @@ fn spawn_torrent_search(
     search_query: String,
     search_id: u64,
     tx: mpsc::Sender<UiMessage>,
-    prowlarr_url: String,
-    prowlarr_apikey: String,
+    config: Config,
     cancel_token: CancellationToken,
 ) {
-    use futures::stream::{self, StreamExt};
-
     const VIDEO_CATEGORIES: &[u32] = &[2000, 5000];
-    const MAX_CONCURRENT_SEARCHES: usize = 5; // Limit concurrent searches to avoid overwhelming the system
 
     tokio::spawn(async move {
-        let prowlarr_config = crate::config::ProwlarrConfig {
-            url: prowlarr_url,
-            apikey: prowlarr_apikey,
-        };
-        let prowlarr = ProwlarrClient::new(&prowlarr_config);
-        let torznab = TorznabClient::new();
+        // Create IndexerManager from config
+        let manager = crate::indexers::IndexerManager::from_config(&config);
 
-        match prowlarr.get_usable_indexers().await {
-            Ok(indexers) => {
-                // Check if cancelled before proceeding
-                if cancel_token.is_cancelled() {
-                    debug!(search_id, "search cancelled before indexer queries");
-                    return;
-                }
+        // Check if cancelled before searching
+        if cancel_token.is_cancelled() {
+            debug!(search_id, "search cancelled before indexer queries");
+            return;
+        }
 
-                if indexers.is_empty() {
-                    let _ = tx
-                        .send(UiMessage::SearchError(
-                            "No indexers configured in Prowlarr".to_string(),
-                        ))
-                        .await;
-                    return;
-                }
+        // Search all configured indexers
+        let results = manager
+            .search_all(&search_query, Some(VIDEO_CATEGORIES))
+            .await;
 
-                // Run searches in parallel with limited concurrency
-                let search_futures = indexers.into_iter().map(|indexer| {
-                    let prowlarr_url = prowlarr_config.url.clone();
-                    let prowlarr_apikey = prowlarr_config.apikey.clone();
-                    let search_query = search_query.clone();
-                    let indexer_name = indexer.name.clone();
-                    let indexer_id = indexer.id;
+        // Check if cancelled after search
+        if cancel_token.is_cancelled() {
+            debug!(search_id, "search cancelled after indexer queries");
+            return;
+        }
 
-                    async move {
-                        let torznab = TorznabClient::new();
-                        let result = torznab
-                            .search(
-                                &prowlarr_url,
-                                &prowlarr_apikey,
-                                indexer_id,
-                                &indexer_name,
-                                &search_query,
-                                Some(VIDEO_CATEGORIES),
-                            )
-                            .await;
-
-                        (indexer_name, result)
-                    }
-                });
-
-                // Collect results as they complete
-                let mut all_results = Vec::new();
-                let mut last_error: Option<String> = None;
-                let mut results_stream =
-                    stream::iter(search_futures).buffer_unordered(MAX_CONCURRENT_SEARCHES);
-
-                while let Some((indexer_name, result)) = results_stream.next().await {
-                    // Check for cancellation while collecting results
-                    if cancel_token.is_cancelled() {
-                        debug!(search_id, "search cancelled while collecting results");
-                        return;
-                    }
-
-                    match result {
-                        Ok(results) => {
-                            debug!(
-                                indexer = indexer_name,
-                                count = results.len(),
-                                "indexer search completed"
-                            );
-                            all_results.extend(results);
-                        }
-                        Err(e) => {
-                            error!(
-                                indexer = indexer_name,
-                                error = %e,
-                                "indexer search failed"
-                            );
-                            last_error = Some(format!("{}: {}", indexer_name, e));
-                        }
-                    }
-                }
-
-                if all_results.is_empty() {
-                    let error_msg = last_error.unwrap_or_else(|| "No results found".to_string());
-                    let _ = tx.send(UiMessage::SearchError(error_msg)).await;
-                } else {
-                    let _ = tx
-                        .send(UiMessage::SearchComplete {
-                            results: all_results,
-                            search_id,
-                        })
-                        .await;
-                }
-            }
-            Err(e) => {
-                let _ = tx
-                    .send(UiMessage::SearchError(format!("Prowlarr error: {}", e)))
-                    .await;
-            }
+        if results.is_empty() {
+            let _ = tx
+                .send(UiMessage::SearchError("No results found".to_string()))
+                .await;
+        } else {
+            let _ = tx
+                .send(UiMessage::SearchComplete { results, search_id })
+                .await;
         }
     });
 }
@@ -496,9 +420,6 @@ async fn run_app(
     tx: mpsc::Sender<UiMessage>,
     rx: &mut mpsc::Receiver<UiMessage>,
 ) -> io::Result<()> {
-    let _prowlarr = ProwlarrClient::new(&config.prowlarr);
-    let _torznab = TorznabClient::new();
-
     // Video categories: Movies & TV
     const VIDEO_CATEGORIES: &[u32] = &[2000, 5000];
 
@@ -1541,8 +1462,7 @@ async fn run_app(
                                     search_query,
                                     app.search_id,
                                     tx.clone(),
-                                    config.prowlarr.url.clone(),
-                                    config.prowlarr.apikey.clone(),
+                                    config.clone(),
                                     cancel_token,
                                 );
 
@@ -1604,8 +1524,6 @@ async fn run_app(
                             let query = app.search_input.clone();
                             let current_search_id = app.search_id;
                             let tx = tx.clone();
-                            let prowlarr_url = config.prowlarr.url.clone();
-                            let prowlarr_apikey = config.prowlarr.apikey.clone();
                             let tmdb_apikey = config.tmdb.as_ref().map(|t| t.apikey.clone());
 
                             // Create new cancellation token for this search
@@ -1640,8 +1558,7 @@ async fn run_app(
                                 query,
                                 current_search_id,
                                 tx.clone(),
-                                prowlarr_url,
-                                prowlarr_apikey,
+                                config.clone(),
                                 cancel_token,
                             );
                         }
@@ -1822,54 +1739,38 @@ async fn run_app(
 
                             let current_search_id = app.search_id;
                             let tx = tx.clone();
-                            let prowlarr_url = config.prowlarr.url.clone();
-                            let prowlarr_apikey = config.prowlarr.apikey.clone();
+                            let config_clone = config.clone();
 
                             tokio::spawn(async move {
-                                let prowlarr_config = crate::config::ProwlarrConfig {
-                                    url: prowlarr_url,
-                                    apikey: prowlarr_apikey,
-                                };
-                                let prowlarr = ProwlarrClient::new(&prowlarr_config);
-                                let torznab = TorznabClient::new();
+                                const VIDEO_CATEGORIES: &[u32] = &[2000, 5000];
+                                let manager =
+                                    crate::indexers::IndexerManager::from_config(&config_clone);
 
-                                match prowlarr.get_usable_indexers().await {
-                                    Ok(indexers) => {
-                                        let mut all_results = Vec::new();
-                                        for indexer in &indexers {
-                                            if let Ok(results) = torznab
-                                                .search(
-                                                    &prowlarr_config.url,
-                                                    &prowlarr_config.apikey,
-                                                    indexer.id,
-                                                    &indexer.name,
-                                                    &query,
-                                                    Some(VIDEO_CATEGORIES),
-                                                )
-                                                .await
-                                            {
-                                                all_results.extend(results);
-                                            }
-                                        }
-                                        // Filter for streamable and sort by seeders
-                                        let mut streamable: Vec<_> = all_results
-                                            .into_iter()
-                                            .filter(|r| r.is_streamable())
-                                            .collect();
-                                        streamable.sort_by(|a, b| {
-                                            b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0))
-                                        });
-                                        let _ = tx
-                                            .send(UiMessage::SearchComplete {
-                                                results: streamable,
-                                                search_id: current_search_id,
-                                            })
-                                            .await;
-                                    }
-                                    Err(e) => {
-                                        let _ =
-                                            tx.send(UiMessage::SearchError(e.to_string())).await;
-                                    }
+                                let all_results =
+                                    manager.search_all(&query, Some(VIDEO_CATEGORIES)).await;
+
+                                // Filter for streamable and sort by seeders
+                                let mut streamable: Vec<_> = all_results
+                                    .into_iter()
+                                    .filter(|r| r.is_streamable())
+                                    .collect();
+                                streamable.sort_by(|a, b| {
+                                    b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0))
+                                });
+
+                                if streamable.is_empty() {
+                                    let _ = tx
+                                        .send(UiMessage::SearchError(
+                                            "No results found".to_string(),
+                                        ))
+                                        .await;
+                                } else {
+                                    let _ = tx
+                                        .send(UiMessage::SearchComplete {
+                                            results: streamable,
+                                            search_id: current_search_id,
+                                        })
+                                        .await;
                                 }
                             });
                         }
@@ -2606,8 +2507,16 @@ async fn run_app(
 fn get_settings_field_value(app: &App, config: &Config) -> String {
     match app.settings_section {
         SettingsSection::Prowlarr => match app.settings_field_index {
-            0 => config.prowlarr.url.clone(),
-            1 => config.prowlarr.apikey.clone(),
+            0 => config
+                .prowlarr
+                .as_ref()
+                .map(|p| p.url.clone())
+                .unwrap_or_default(),
+            1 => config
+                .prowlarr
+                .as_ref()
+                .map(|p| p.apikey.clone())
+                .unwrap_or_default(),
             2 => String::new(), // Status field is read-only
             _ => String::new(),
         },
@@ -2668,11 +2577,19 @@ fn apply_settings_edit(app: &App, config: &mut Config) {
     let value = app.settings_edit_buffer.trim().to_string();
 
     match app.settings_section {
-        SettingsSection::Prowlarr => match app.settings_field_index {
-            0 => config.prowlarr.url = value,
-            1 => config.prowlarr.apikey = value,
-            _ => {}
-        },
+        SettingsSection::Prowlarr => {
+            let prowlarr = config
+                .prowlarr
+                .get_or_insert_with(|| crate::config::ProwlarrConfig {
+                    url: String::new(),
+                    apikey: String::new(),
+                });
+            match app.settings_field_index {
+                0 => prowlarr.url = value,
+                1 => prowlarr.apikey = value,
+                _ => {}
+            }
+        }
         SettingsSection::Tmdb => {
             if app.settings_field_index == 0 {
                 if value.is_empty() {
@@ -2796,8 +2713,16 @@ fn is_readonly_field(app: &App) -> bool {
 fn get_wizard_field_value(app: &App, config: &Config) -> String {
     match app.wizard_step {
         WizardStep::Prowlarr => match app.wizard_field_index {
-            0 => config.prowlarr.url.clone(),
-            1 => config.prowlarr.apikey.clone(),
+            0 => config
+                .prowlarr
+                .as_ref()
+                .map(|p| p.url.clone())
+                .unwrap_or_default(),
+            1 => config
+                .prowlarr
+                .as_ref()
+                .map(|p| p.apikey.clone())
+                .unwrap_or_default(),
             _ => String::new(),
         },
         WizardStep::Tmdb => match app.wizard_field_index {
@@ -2821,11 +2746,19 @@ fn apply_wizard_edit(app: &App, config: &mut Config) {
     let value = app.wizard_edit_buffer.trim().to_string();
 
     match app.wizard_step {
-        WizardStep::Prowlarr => match app.wizard_field_index {
-            0 => config.prowlarr.url = value,
-            1 => config.prowlarr.apikey = value,
-            _ => {}
-        },
+        WizardStep::Prowlarr => {
+            let prowlarr = config
+                .prowlarr
+                .get_or_insert_with(|| crate::config::ProwlarrConfig {
+                    url: String::new(),
+                    apikey: String::new(),
+                });
+            match app.wizard_field_index {
+                0 => prowlarr.url = value,
+                1 => prowlarr.apikey = value,
+                _ => {}
+            }
+        }
         WizardStep::Tmdb => {
             if app.wizard_field_index == 0 {
                 if value.is_empty() {

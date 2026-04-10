@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::prowlarr::ProwlarrClient;
+use crate::indexers::prowlarr::ProwlarrClient;
 use crate::tmdb::TmdbClient;
 
 pub struct CheckResult {
@@ -87,7 +87,15 @@ pub async fn run_checks(config: &Config) -> Vec<CheckResult> {
 }
 
 async fn check_prowlarr(config: &Config) -> CheckResult {
-    let client = ProwlarrClient::new(&config.prowlarr);
+    // Check if Prowlarr is configured
+    let prowlarr_config = match &config.prowlarr {
+        Some(pc) => pc,
+        None => {
+            return CheckResult::warning("Prowlarr", "Not configured. Using embedded indexers.");
+        }
+    };
+
+    let client = ProwlarrClient::new(prowlarr_config);
 
     match client.get_usable_indexers().await {
         Ok(indexers) => {
@@ -285,10 +293,8 @@ mod tests {
     #[test]
     fn test_check_discord_with_app_id() {
         let config = Config {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: "test".to_string(),
-            },
+            indexers: Default::default(),
+            prowlarr: None,
             tmdb: None,
             player: PlayerConfig::default(),
             storage: StorageConfig::default(),
@@ -312,10 +318,8 @@ mod tests {
     #[test]
     fn test_check_discord_without_app_id() {
         let config = Config {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: "test".to_string(),
-            },
+            indexers: Default::default(),
+            prowlarr: None,
             tmdb: None,
             player: PlayerConfig::default(),
             storage: StorageConfig::default(),
@@ -339,10 +343,8 @@ mod tests {
     #[tokio::test]
     async fn test_check_trakt_no_client_id() {
         let config = Config {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: "test".to_string(),
-            },
+            indexers: Default::default(),
+            prowlarr: None,
             tmdb: None,
             player: PlayerConfig::default(),
             storage: StorageConfig::default(),
@@ -368,10 +370,8 @@ mod tests {
     #[tokio::test]
     async fn test_check_trakt_no_access_token() {
         let config = Config {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: "test".to_string(),
-            },
+            indexers: Default::default(),
+            prowlarr: None,
             tmdb: None,
             player: PlayerConfig::default(),
             storage: StorageConfig::default(),
@@ -397,10 +397,8 @@ mod tests {
     #[tokio::test]
     async fn test_check_trakt_fully_configured() {
         let config = Config {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: "test".to_string(),
-            },
+            indexers: Default::default(),
+            prowlarr: None,
             tmdb: None,
             player: PlayerConfig::default(),
             storage: StorageConfig::default(),
@@ -426,10 +424,8 @@ mod tests {
     #[test]
     fn test_check_player_not_found() {
         let config = Config {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: "test".to_string(),
-            },
+            indexers: Default::default(),
+            prowlarr: None,
             tmdb: None,
             player: PlayerConfig {
                 command: "nonexistent_player_xyz_123".to_string(),
@@ -459,10 +455,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&test_dir);
 
         let config = Config {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: "test".to_string(),
-            },
+            indexers: Default::default(),
+            prowlarr: None,
             tmdb: None,
             player: PlayerConfig::default(),
             storage: StorageConfig {
@@ -494,10 +488,8 @@ mod tests {
         std::fs::create_dir_all(&test_dir).unwrap();
 
         let config = Config {
-            prowlarr: ProwlarrConfig {
-                url: "http://localhost:9696".to_string(),
-                apikey: "test".to_string(),
-            },
+            indexers: Default::default(),
+            prowlarr: None,
             tmdb: None,
             player: PlayerConfig::default(),
             storage: StorageConfig {

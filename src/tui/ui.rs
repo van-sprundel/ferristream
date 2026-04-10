@@ -102,10 +102,17 @@ fn draw_wizard(frame: &mut Frame, app: &App, config: &Config) {
             )),
         ],
         WizardStep::Prowlarr => {
-            let fields = [
-                ("URL", config.prowlarr.url.clone(), 0),
-                ("API Key", mask_secret(&config.prowlarr.apikey), 1),
-            ];
+            let url = config
+                .prowlarr
+                .as_ref()
+                .map(|p| p.url.clone())
+                .unwrap_or_default();
+            let apikey = config
+                .prowlarr
+                .as_ref()
+                .map(|p| mask_secret(&p.apikey))
+                .unwrap_or_default();
+            let fields = [("URL", url, 0), ("API Key", apikey, 1)];
             build_wizard_fields(app, &fields)
         }
         WizardStep::Tmdb => {
@@ -1164,17 +1171,28 @@ fn draw_settings(frame: &mut Frame, app: &App, config: &Config) {
     // Build fields with selection highlighting
     let fields: Vec<(&str, String, bool)> = match app.settings_section {
         SettingsSection::Prowlarr => {
-            let status = if config.prowlarr.url.is_empty() {
+            let url = config
+                .prowlarr
+                .as_ref()
+                .map(|p| p.url.clone())
+                .unwrap_or_default();
+            let apikey = config
+                .prowlarr
+                .as_ref()
+                .map(|p| p.apikey.clone())
+                .unwrap_or_default();
+
+            let status = if url.is_empty() {
                 "⚠ URL not set".to_string()
-            } else if config.prowlarr.apikey.is_empty() {
+            } else if apikey.is_empty() {
                 "⚠ API Key not set".to_string()
             } else {
                 "✓ Configured (use 'd' for Doctor to test connection)".to_string()
             };
 
             vec![
-                ("URL", config.prowlarr.url.clone(), false),
-                ("API Key", mask_secret(&config.prowlarr.apikey), true),
+                ("URL", url, false),
+                ("API Key", mask_secret(&apikey), true),
                 ("Status", status, false),
             ]
         }
